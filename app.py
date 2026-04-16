@@ -1,6 +1,6 @@
 import os
-import psycopg2
-import psycopg2.extras
+import psycopg
+import psycopg.rows
 import anthropic
 import pandas as pd
 import plotly.express as px
@@ -19,18 +19,19 @@ st.set_page_config(
 # ── Conexión ────────────────────────────────────────────────────────────────
 
 def get_conn():
-    return psycopg2.connect(
+    return psycopg.connect(
         host=os.getenv("POSTGRES_HOST", "localhost"),
         port=int(os.getenv("POSTGRES_PORT", 5433)),
         dbname=os.getenv("POSTGRES_DB", "ndev25"),
         user=os.getenv("POSTGRES_USER", "ndev"),
         password=os.getenv("POSTGRES_PASSWORD", "ndev"),
+        row_factory=psycopg.rows.dict_row,
     )
 
 @st.cache_data(ttl=300)
 def query(sql: str) -> pd.DataFrame:
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor() as cur:
             cur.execute(sql)
             rows = cur.fetchall()
     return pd.DataFrame(rows)
@@ -1200,7 +1201,7 @@ Reglas estrictas:
 def leer_contexto_sistema() -> str:
     """Lee el estado actual de la DB y lo devuelve como string formateado."""
     with get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with conn.cursor() as cur:
 
             cur.execute("""
                 SELECT estado_macro, score_riesgo, confianza
