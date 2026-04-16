@@ -1,10 +1,6 @@
 anthropic==0.39.0
-geopandas==1.1.2
 pandas==2.1.4
-pandas-datareader==0.10.0
-pandas-ta==0.3.14b0
-plotly @ file:///Users/cbousseau/work/recipes/ci_py311/plotly_1677953301864/work
-psycopg2==2.9.10
+plotly==5.18.0
 psycopg2-binary==2.9.9
 python-dotenv==1.0.0
 streamlit==1.38.0
