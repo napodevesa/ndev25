@@ -1,0 +1,101 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2822
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww18680\viewh13100\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 Tengo un sistema de inversi\'f3n cuantitativo multifactor\
+construido en Python + PostgreSQL. Te paso la arquitectura\
+completa para que entiendas el contexto antes de empezar.\
+\
+\uc0\u9552 \u9552 \u9552  ARQUITECTURA GENERAL \u9552 \u9552 \u9552 \
+\
+5 capas encadenadas:\
+\
+1. CAPA MACRO\
+   Schema: macro\
+   Tablas: macro_series, macro_raw, macro_diagnostico, macro_notas_ai\
+   Vistas: v_macro_pivot \uc0\u8594  v_semaforo \u8594  v_diagnostico\
+   Scripts: macro_fred.py (ingesta FRED), macro_ai.py (nota Claude)\
+   Output: estado_macro = EXPANSION | SLOWDOWN | CONTRACTION | RECOVERY\
+   Fuente: FRED API (15 series macroecon\'f3micas)\
+\
+2. CAPA SECTOR\
+   Schema: sector\
+   Tablas: sector_etfs, sector_raw, sector_snapshot, sector_notas_ai\
+   Vistas: v_sector_scores \uc0\u8594  v_sector_ranking \u8594  v_sector_diagnostico\
+   Scripts: sector_precios.py (Polygon), sector_ai.py (nota Claude)\
+   Output: ranking de 63 ETFs con alineacion_macro (ALIGNED/NEUTRAL)\
+   Universo: 11 sectoriales SPDR + 49 ETFs industria + 2 refugio (GLD, TLT)\
+\
+3. CAPA MICRO (multifactor)\
+   Schemas: api_raw, limpieza, procesados, modelados, multifactor, seleccion\
+   Universo: ~3.000 empresas USA (filtradas por market cap)\
+   Factores: Quality 60% + Value 40% (sin momentum \'97 est\'e1 en seleccion)\
+   Scripts ingesta: ingest_ratios_ttm.py, ingest_keymetrics.py,\
+                    ingest_momentum.py, ingest_prices.py, ingest_technical.py\
+   Fuente: FMP API\
+   Flujo:\
+     api_raw \uc0\u8594  limpieza \u8594  procesados (benchmarks) \u8594 \
+     modelados (z-scores, percentiles) \uc0\u8594  multifactor (ranking) \u8594 \
+     seleccion (filtro absoluto ~700 empresas:\
+       ROIC>4%, D/E<0.8, NetDebt/EBITDA<3, FCF>0)\
+   Enriquecimiento en seleccion:\
+     - seleccion.technical: RSI, MA200, vol, OBV (desde procesados.multifactor_technical)\
+     - seleccion.regresiones: tendencia ROIC y netDebtToEBITDA (Altman Z, Piotroski F)\
+     - seleccion.scores: Altman Z-score, Piotroski F-score\
+\
+4. CAPA AGENTE TRADING\
+   Schema: agente\
+   Tablas: agente.fundamental_snapshot, agente.trade_decision_direction,\
+           agente.notas_ai\
+   Script: micro_ai.py (nota Claude)\
+   L\'f3gica: SQL puro con CTEs encadenados (v4.0)\
+   Output: se\'f1al por empresa \uc0\u8594  stock | cash_secured_put | no_trade\
+   Inputs que consume:\
+     - estado_macro de macro.macro_diagnostico\
+     - quality_percentile, value_percentile de multifactor\
+     - altman_z_score, piotroski_score de seleccion.scores\
+     - roic_signo, roic_confiable de seleccion.regresiones\
+     - rsi_14_semanal, precio_vs_ma200, obv_slope de seleccion.technical\
+\
+5. CAPA AGENTE OPCIONES\
+   Schema: agente_opciones\
+   Tablas: agente_opciones.contratos_raw, agente_opciones.trade_decision_opciones\
+   Script ingesta: script Polygon (snapshot opciones ATM \'b12 strikes, delta 25-35)\
+   L\'f3gica: SQL puro v2.0\
+   Output: estrategia por empresa \uc0\u8594 \
+     cash_secured_put | bull_put_spread | iron_condor |\
+     jade_lizard | calendar_spread | no_trade\
+   Inputs que consume:\
+     - estado_macro de macro.macro_diagnostico\
+     - direccion y flag_timing de agente.trade_decision_direction\
+     - IV, Greeks, OI de agente_opciones.contratos_raw\
+     - VIX de macro.macro_diagnostico\
+\
+\uc0\u9552 \u9552 \u9552  SCHEMAS EN LA DB \u9552 \u9552 \u9552 \
+macro, sector, api_raw, limpieza, procesados, modelados,\
+multifactor, seleccion, agente, agente_opciones,\
+universos, infraestructura\
+\
+\uc0\u9552 \u9552 \u9552  FRECUENCIA DE EJECUCI\'d3N \u9552 \u9552 \u9552 \
+Semanal:\
+  macro_fred.py \uc0\u8594  macro_ai.py \u8594 \
+  sector_precios.py \uc0\u8594  sector_ai.py \u8594 \
+  ingest_prices.py \uc0\u8594  ingest_technical.py\
+\
+Trimestral (post earnings):\
+  ingest_ratios_ttm.py \uc0\u8594  ingest_keymetrics.py \u8594 \
+  ingest_momentum.py \uc0\u8594  pipeline multifactor \u8594 \
+  seleccion \uc0\u8594  agente.fundamental_snapshot \u8594 \
+  trade_decision_direction \uc0\u8594  micro_ai.py \u8594 \
+  ingesta opciones \uc0\u8594  trade_decision_opciones\
+\
+\uc0\u9552 \u9552 \u9552  STACK T\'c9CNICO \u9552 \u9552 \u9552 \
+Python 3.11 | PostgreSQL | psycopg2 | pandas | numpy\
+SQLAlchemy (algunos scripts) | FMP API | Polygon API | FRED API\
+Anthropic Claude API (macro_ai, sector_ai, micro_ai)\
+\
+\uc0\u9552 \u9552 \u9552  LO QUE QUIERO HACER HOY \u9552 \u9552 \u9552 \
+[ac\'e1 describ\'eds la tarea espec\'edfica de cada sesi\'f3n]}

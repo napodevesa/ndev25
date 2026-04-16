@@ -1,0 +1,189 @@
+FACTOR: QUALITY
+Cash-Flow & Capital Efficiency
+
+High Quality · Cash-Generative · Low Leverage
+
+🧱 DEFINICIÓN INSTITUCIONAL DEL FACTOR
+📦 FACTOR
+
+QUALITY — Cash Flow & Capital Efficiency
+
+🧠 Ontología
+
+Aversión al riesgo
+
+Preferencia por caja
+
+Disciplina de capital
+
+🧬 Esencia
+
+Capacidad de generar y sostener valor sin depender del ciclo financiero
+
+💡 Intuición económica
+
+Empresas que:
+
+Generan caja real y recurrente
+
+Asignan capital de forma eficiente
+
+Mantienen una estructura financiera sólida
+
+Sobreviven y compiten a lo largo de ciclos adversos
+
+👉 El foco no es crecer rápido, sino no destruir capital.
+
+📊 Métricas utilizadas
+
+ROIC
+
+Net Debt / EBITDA
+
+Free Cash Flow per Share (FCF per Share)
+
+Price / Free Cash Flow (P/FCF)
+
+Cash Flow to Debt Ratio (CF / Debt)
+
+🧠 Racional de métricas
+
+ROIC
+→ Métrica central de calidad económica y eficiencia en asignación de capital
+
+Net Debt / EBITDA y CF / Debt
+→ Riesgo financiero y solvencia real, no contable
+
+FCF per Share
+→ Creación de valor tangible para el accionista
+
+P / FCF
+→ Valuación robusta, menos manipulable que earnings
+
+🧩 Dimensiones de benchmark
+
+El factor se evalúa relativamente, no en absoluto:
+
+Sector
+
+Industria
+
+Market Cap Tier
+
+👉 La calidad es contextual, no universal.
+
+❌ Limitación natural del factor (NO es un error)
+
+No optimiza timing
+
+Puede sufrir en:
+
+Rotaciones hacia Momentum
+
+Fases eufóricas
+
+Rallies especulativos
+
+👉 Esto no es una falla
+👉 Es una característica estructural del factor
+
+📈 ¿CUÁNDO FUNCIONA BIEN EL FACTOR QUALITY?
+🟢 Funciona mejor cuando:
+1️⃣ Tasas altas o política monetaria restrictiva
+
+El capital es caro
+
+La deuda pesa
+
+La caja vale oro
+
+👉 Quality outperforma porque:
+
+Financia crecimiento internamente
+
+No depende del mercado de crédito
+
+📌 No necesita crecimiento; necesita escasez.
+
+2️⃣ Fases de desaceleración o incertidumbre
+
+Riesgo macro elevado
+
+Earnings menos confiables
+
+Flight to quality
+
+👉 El mercado paga estabilidad y previsibilidad.
+
+3️⃣ Mercados selectivos (no eufóricos)
+
+No todo sube
+
+Se castiga mala calidad
+
+Se premia eficiencia
+
+👉 El factor brilla en stock picking, no en beta.
+
+4️⃣ Horizontes largos
+
+LEAPs
+
+Buy & hold inteligente
+
+Compounders reales
+
+👉 Reinversión de caja
+👉 Baja probabilidad de blow-up
+
+📉 ¿CUÁNDO SUFRE EL FACTOR? (CLAVE)
+🔴 Sufre cuando:
+1️⃣ Rallies especulativos / euforia
+
+Liquidez extrema
+
+Tasas bajando rápido
+
+Narrativas > fundamentos
+
+QE agresivo
+
+Compresión artificial del costo de capital
+
+👉 Dominan Momentum + Growth
+👉 Quality queda rezagado, no equivocado
+
+2️⃣ Rotaciones violentas a Growth / Beta
+
+Cambios bruscos de régimen
+
+Short covering
+
+Repricing acelerado
+
+👉 El mercado paga opcionalidad futura, no caja actual
+
+3️⃣ Reversión de momentum
+
+El precio manda
+
+Los factores fundamentales llegan tarde
+
+👉 No es error del factor
+👉 Es timing (Momentum)
+
+🧠 Conclusión operativa
+
+Quality = columna vertebral del sistema
+
+No es un factor de persecución
+
+Es un factor de supervivencia + compound
+
+👉 Se usa para:
+
+Filtrar empresas saludables
+
+Construir convicción
+
+Sostener decisiones bajo presión

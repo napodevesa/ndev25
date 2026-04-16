@@ -1,0 +1,16 @@
+Indicador,Fecha,Valor,Unidad,Estado,Nota,Descripción
+Tasa de Desempleo,2026-02-01,4.4,%,⚠️ ALERTA,Mercado laboral enfriando,Mercado laboral
+Tasa Fed Funds (objetivo sup),2026-03-30,3.75,%,⚠️ ALERTA,Política restrictiva moderada,Política monetaria
+IPC Anual (%),—,N/D,índice,—,Sin dato disponible,Base cálculo inflación
+IPC Subyacente (core),—,N/D,índice,—,Sin dato disponible,Sin alimentos ni energía
+Curva Rendimiento 10Y-2Y,2026-03-30,0.53,pp,✅ OK,Curva normal,Spread de tasas
+Bono 2Y,2026-03-27,3.88,%,—,Ver contexto,Parte corta curva
+Bono 10Y,2026-03-27,4.44,%,—,Ver contexto,Parte larga curva
+PIB Real (var. trimestral),2025-10-01,0.7,%,⚠️ ALERTA,Crecimiento débil,Crecimiento económico
+Nóminas no agrícolas (NFP),2026-02-01,158466,miles,—,Ver contexto,Empleo total
+Ventas minoristas,2026-01-01,733537.0,M USD,—,Ver contexto,Consumo
+Expectativas inflación 5Y,2026-03-30,2.57,%,⚠️ ALERTA,Expectativas subiendo,Credibilidad Fed
+Cond. financieras (NFCI),2026-03-20,-0.47504,índice,✅ OK,Condiciones laxas,Crédito+liquidez+riesgo
+VIX (rezago 1 día),2026-03-27,31.05,puntos,🔴 RIESGO,Pánico / stress sistémico,Volatilidad implícita
+Permisos de construcción,2026-01-01,1386.0,miles,—,Ver contexto,Indicador líder
+Crédito al consumo,2026-01-01,5114679.44,M USD,—,Ver contexto,Estrés financiero
