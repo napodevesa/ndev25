@@ -295,3 +295,294 @@ e incertidumbre en los mercados, mientras que la inflación persiste
 ligeramente por encima del objetivo de la Fed, limitando el margen de
 maniobra de política monetaria."
 ```
+
+---
+
+## CAPA SECTOR
+
+### 1. Propósito
+
+La capa Sector clasifica y rankea **63 ETFs** (11 sectoriales SPDR, 49 de industria, 2 de refugio y 1 benchmark) según su fuerza relativa, momentum y volumen. Su output es un ranking de ETFs con estado (`LEADING_STRONG | LEADING_WEAK | NEUTRAL | LAGGING`) y un flag `alineacion_macro` (`ALIGNED | NEUTRAL`) que indica si el ETF favorece el régimen macro actual.
+
+Esta capa responde a dos preguntas:
+- ¿Qué sectores están liderando o rezagando al mercado?
+- ¿Cuáles de esos líderes están alineados con el ciclo económico que identificó la capa Macro?
+
+El output alimenta directamente la pantalla de Sectores en `app.py` y el contexto del Asistente.
+
+---
+
+### 2. Arquitectura de datos
+
+| Schema | Tabla / Vista | Tipo | Descripción | Filas actuales |
+|--------|--------------|------|-------------|---------------|
+| `sector` | `sector_etfs` | Tabla | Catálogo de los 63 ETFs: ticker, nombre, tipo, sector_gics, industria, macro_regime | 63 |
+| `sector` | `sector_raw` | Tabla | Precios OHLCV diarios históricos descargados de Polygon | — |
+| `sector` | `sector_snapshot` | Tabla | Snapshot de indicadores técnicos calculados por corrida (run_id) | ~63 por run |
+| `sector` | `sector_diagnostico_tecnico` | Tabla | Diagnóstico agregado por grupo DEFENSIVOS / CÍCLICOS / MIXTOS | 1 por corrida |
+| `sector` | `sector_notas_ai` | Tabla | Nota cualitativa generada por Claude por cada corrida | 1 por corrida |
+| `sector` | `v_sector_scores` | Vista | Calcula `score_momentum`, `score_volumen` y `score_total` desde el último snapshot | — |
+| `sector` | `v_sector_ranking` | Vista | Agrega el estado determinístico y el ranking (global y dentro del sector) | — |
+| `sector` | `v_sector_diagnostico` | Vista | Vista resumen de una sola fila: conteos, top picks, señal de rotación | — |
+
+**Flujo interno:**
+```
+sector_raw → (cálculo en Python) → sector_snapshot
+sector_snapshot → v_sector_scores → v_sector_ranking → v_sector_diagnostico
+```
+
+Las vistas son en tiempo real. `sector_snapshot` persiste un registro por ETF por corrida. La tabla `sector_diagnostico_tecnico` y `sector_notas_ai` almacenan el snapshot al final de cada ejecución.
+
+---
+
+### 3. Universo de ETFs
+
+| Tipo | Cantidad | Ejemplos |
+|------|----------|---------|
+| `sector` | 11 | XLB, XLC, XLE, XLF, XLI, XLK, XLP, XLRE, XLU, XLV, XLY |
+| `industria` | 49 | FAN, PBJ, ICLN, SOXX, XOP, IBB, UTG, XRT, IYR, … |
+| `refugio` | 2 | GLD, TLT |
+| `benchmark` | 1 | SPY |
+
+El catálogo completo está en `sector.sector_etfs`. La columna `tipo` diferencia los grupos; la columna `macro_regime` indica en qué régimen macro se favorece ese ETF (ej.: `CONTRACTION` para GLD/TLT).
+
+Para las vistas de ranking, los rankings globales incluyen todos los tipos. La vista `v_sector_diagnostico` filtra solo `tipo = 'industria'` para los top picks y los conteos de estado.
+
+---
+
+### 4. Indicadores calculados
+
+Todos los indicadores se calculan en Python (script `sector_precios.py`) con datos OHLCV de Polygon y se guardan en `sector.sector_snapshot` una fila por ETF por corrida:
+
+| Columna | Descripción |
+|---------|-------------|
+| `rs_vs_spy` | Ratio de fuerza relativa: `close_etf / close_spy` |
+| `rsi_rs_diario` | RSI(14) calculado sobre la serie `rs_vs_spy` diaria |
+| `rsi_rs_semanal` | RSI(14) sobre la serie `rs_vs_spy` semanal |
+| `slope_rs` | Pendiente lineal (regresión) de los últimos 60 días de `rs_vs_spy` |
+| `rs_percentil` | Percentil actual de `rs_vs_spy` en la ventana de 52 semanas (0–100) |
+| `ret_1m` | Retorno en 1 mes (%) |
+| `ret_3m` | Retorno en 3 meses (%) |
+| `ret_6m` | Retorno en 6 meses (%) |
+| `ret_1a` | Retorno en 1 año (%) |
+| `dist_max_52w` | Distancia porcentual desde el máximo de 52 semanas (negativo = caída) |
+| `vol_ratio` | Ratio de volumen actual vs. media de 20 días |
+| `obv_slope` | Pendiente del OBV (On-Balance Volume) — positivo / cero / negativo |
+| `rsi_precio` | RSI(14) del precio de cierre del ETF |
+| `estado_macro` | Estado macro heredado de `macro.macro_diagnostico` al momento del run |
+| `alineacion_macro` | `ALIGNED` si el ETF favorece el régimen actual; `NEUTRAL` en caso contrario |
+
+---
+
+### 5. Motor de scoring
+
+El scoring se calcula en la vista `sector.v_sector_scores` (archivo `sector/vistas_v_sector_scores.sql`). Son tres scores de 0 a 100, todos redondeados a 1 decimal:
+
+**score_momentum** — fuerza relativa y retornos:
+```sql
+COALESCE(rsi_rs_semanal, 50) * 0.40
++ LEAST(100, GREATEST(0, COALESCE(ret_3m, 0) * 2 + 50)) * 0.35
++ COALESCE(rs_percentil, 50) * 0.25
+```
+
+**score_volumen** — confirmación de volumen y dirección OBV:
+```sql
+LEAST(100, GREATEST(0, (COALESCE(vol_ratio, 1.0) - 0.5) * 100)) * 0.60
++ CASE
+    WHEN obv_slope > 0 THEN 75
+    WHEN obv_slope = 0 THEN 50
+    ELSE 25
+  END * 0.40
+```
+
+**score_total** — ponderación final:
+```sql
+score_momentum * 0.65 + score_volumen * 0.35
+```
+
+**Clasificación de estado** (vista `v_sector_ranking`):
+
+| Estado | Condición |
+|--------|-----------|
+| `LEADING_STRONG` | `score_total >= 65` AND `score_volumen >= 60` |
+| `LEADING_WEAK` | `score_momentum >= 60` AND `score_volumen < 60` |
+| `LAGGING` | `score_total < 35` |
+| `NEUTRAL` | el resto |
+
+**Señal de rotación** (vista `v_sector_diagnostico`):
+
+| Señal | Condición |
+|-------|-----------|
+| `ROTACION_CLARA` | `n_leading_strong >= 5` |
+| `ROTACION_MODERADA` | `n_leading_strong >= 3` |
+| `MERCADO_DEBIL` | `n_lagging >= 30` |
+| `SIN_TENDENCIA` | el resto |
+
+---
+
+### 6. Diagnóstico técnico sectorial
+
+La tabla `sector.sector_diagnostico_tecnico` (generada por `sector_diagnostico_tecnico.py.ipynb`) clasifica los ETFs sectoriales en tres grupos y calcula un score promedio por grupo:
+
+| Grupo | ETFs incluidos |
+|-------|---------------|
+| `DEFENSIVOS` | XLV, XLP, XLU, GLD, TLT |
+| `CICLICOS` | XLK, XLY, XLF, XLI, XLE |
+| `MIXTOS` | XLB, XLRE, XLC |
+
+Las columnas son `score_defensivos`, `score_ciclicos`, `score_mixtos` (promedios de `score_total` por grupo), `top_3_lideres`, `top_3_rezagados`, y `diagnostico_sector` con valores:
+
+| diagnostico_sector | Condición |
+|-------------------|-----------|
+| `CONFIRMA_EXPANSION` | Cíclicos lideran sobre defensivos |
+| `CONFIRMA_SLOWDOWN` | Defensivos lideran sobre cíclicos |
+| `CONFIRMA_CONTRACTION` | Defensivos muy altos, cíclicos muy bajos |
+| `SEÑAL_MIXTA` | Sin diferencia clara entre grupos |
+
+La columna `coherencia` (`ALTA | MEDIA | BAJA`) indica qué tan consistente es la señal con el `estado_macro` de la capa Macro.
+
+---
+
+### 7. Scripts
+
+El pipeline de la capa Sector tiene tres notebooks en `sector/`:
+
+#### `ingesta.ipynb` (sector_precios)
+- **Fuente**: Polygon API (endpoint `/v2/aggs/ticker/{ticker}/range/1/day/`)
+- **Rate limit**: 5 segundos de espera entre requests (12 calls/min, plan Starter)
+- **Ventana histórica**: `DIAS_HIST = 730` días (≈2 años)
+- **Proceso**: descarga OHLCV → calcula todos los indicadores de `sector_snapshot` → inserta con `ON CONFLICT (ticker, fecha) DO UPDATE` en `sector_raw` → calcula snapshot → inserta en `sector_snapshot`
+- **Loguea en**: `output_ingest/` con `run_id` formato `YYYYMMDD_HHMM`
+
+#### `sector_diagnostico_tecnico.py.ipynb`
+- **Sin llamadas a APIs externas** — trabaja solo con la DB
+- Lee `sector.sector_snapshot` del último `run_id`
+- Clasifica ETFs en DEFENSIVOS / CÍCLICOS / MIXTOS
+- Calcula scores por grupo y determina `diagnostico_sector` y `coherencia`
+- Inserta en `sector.sector_diagnostico_tecnico`
+
+#### `sector_ai.ipynb`
+- **Lee**: `sector.v_sector_diagnostico` (una fila resumen) + top 10 industrias de `sector.v_sector_ranking`
+- **Llama a**: Claude API (`claude-sonnet-4-20250514`, max_tokens=1000)
+- **Genera**: nota cualitativa sobre rotación sectorial, alineación con macro, riesgos
+- **Inserta en**: `sector.sector_notas_ai`
+
+---
+
+### 8. Orden de ejecución
+
+```
+1. ingesta.ipynb            → descarga precios + calcula sector_snapshot
+2. sector_diagnostico_tecnico.py.ipynb  → diagnóstico por grupos
+3. sector_ai.ipynb          → nota cualitativa Claude
+```
+
+Debe ejecutarse **después** de que la capa Macro esté actualizada, porque `sector_snapshot` hereda `estado_macro` y `alineacion_macro` de `macro.macro_diagnostico`.
+
+---
+
+### 9. Queries de verificación
+
+```sql
+-- 1. Top 10 industrias con scores y estado
+SELECT ticker, industria, sector_gics, estado, alineacion_macro,
+       score_momentum, score_volumen, score_total, rank_total,
+       ret_3m, rsi_rs_semanal
+FROM sector.v_sector_ranking
+WHERE tipo = 'industria'
+ORDER BY rank_total
+LIMIT 10;
+
+-- 2. Diagnóstico resumen del universo (una fila)
+SELECT * FROM sector.v_sector_diagnostico;
+
+-- 3. Solo LEADING_STRONG alineados con macro
+SELECT ticker, industria, score_total, ret_3m, ret_6m, alineacion_macro
+FROM sector.v_sector_ranking
+WHERE estado = 'LEADING_STRONG'
+  AND alineacion_macro = 'ALIGNED'
+ORDER BY score_total DESC;
+
+-- 4. Top industria de cada sector padre
+SELECT DISTINCT ON (sector_etf)
+       sector_etf, ticker, industria, score_total, estado
+FROM sector.v_sector_ranking
+WHERE tipo = 'industria'
+ORDER BY sector_etf, score_total DESC;
+
+-- 5. Diagnóstico técnico por grupos (último)
+SELECT fecha, score_defensivos, score_ciclicos, score_mixtos,
+       top_3_lideres, top_3_rezagados, diagnostico_sector, coherencia
+FROM sector.sector_diagnostico_tecnico
+ORDER BY fecha DESC LIMIT 1;
+
+-- 6. Confirmar que el último snapshot tiene filas
+SELECT run_id, COUNT(*) AS n_etfs, MAX(calculado_en) AS calculado_en
+FROM sector.sector_snapshot
+GROUP BY run_id
+ORDER BY run_id DESC LIMIT 3;
+```
+
+---
+
+### 10. Errores comunes
+
+| Error | Causa probable | Solución |
+|-------|---------------|---------|
+| `sector_snapshot` vacío | `ingesta.ipynb` no se ejecutó | Ejecutar ingesta primero; verificar query 6 |
+| `alineacion_macro = NULL` en snapshot | `macro.macro_diagnostico` sin datos | Ejecutar pipeline Macro completo antes |
+| Polygon rate limit error 429 | Muchos requests en poco tiempo | El script tiene `sleep(5)` por ticker; verificar que no se ejecutó dos veces en paralelo |
+| `v_sector_diagnostico` sin top picks | No hay ETFs `ALIGNED + LEADING` | Normal si el mercado está débil; revisar `n_aligned` |
+| `sector_diagnostico_tecnico` sin filas | Notebook 2 no se ejecutó | Ejecutar `sector_diagnostico_tecnico.py.ipynb` después de la ingesta |
+| `sector_notas_ai` sin nota nueva | Notebook 3 no se ejecutó o falló la API | Revisar logs y variable `ANTHROPIC_API_KEY` en `.env` |
+
+---
+
+### 11. Frecuencia y dependencias
+
+| Ejecución | Frecuencia | Dependencia previa |
+|-----------|-----------|-------------------|
+| `ingesta.ipynb` | Semanal (lunes post-apertura) | `macro.macro_diagnostico` actualizado |
+| `sector_diagnostico_tecnico.py.ipynb` | Semanal (inmediatamente después) | `sector.sector_snapshot` del run actual |
+| `sector_ai.ipynb` | Semanal (al final) | `sector_diagnostico_tecnico` + `v_sector_diagnostico` |
+
+**No hay dependencia de ninguna capa inferior** (Micro, Agente). La capa Sector puede ejecutarse de forma independiente siempre que Macro esté actualizado.
+
+---
+
+### 12. Output esperado
+
+Estado actual al 05/04/2026 (`run_id = 20260405_2114`):
+
+```
+run_id           : 20260405_2114
+estado_macro     : SLOWDOWN
+señal_rotacion   : SIN_TENDENCIA
+
+Universo (49 industrias):
+  n_leading_strong : 2
+  n_leading_weak   : 22
+  n_neutral        : 13
+  n_lagging        : 10
+  n_aligned        : 4   (LEADING alineados con SLOWDOWN)
+  score_universo   : 48.8 / 100
+
+Top picks alineados con macro : PBJ, UTG, IBB
+Top picks globales            : FAN, PBJ, ICLN
+
+Top 5 industrias por score_total:
+  1. FAN   — LEADING_WEAK   / NEUTRAL  — score 77.8
+  2. PBJ   — LEADING_STRONG / ALIGNED  — score 77.2
+  3. ICLN  — LEADING_STRONG / NEUTRAL  — score 73.0
+  4. SOXX  — LEADING_WEAK   / NEUTRAL  — score 68.5
+  5. XOP   — LEADING_WEAK   / NEUTRAL  — score 67.0
+
+Diagnóstico técnico sectorial (10/04/2026):
+  score_defensivos : 60.30
+  score_ciclicos   : 50.44
+  score_mixtos     : 62.23
+  top_3_lideres    : XLE, XLI, XLRE
+  top_3_rezagados  : XLK, XLF, XLY
+  diagnostico      : SEÑAL_MIXTA
+  coherencia       : MEDIA
+```
