@@ -1,0 +1,16 @@
+2026-04-18 11:55:19,957 | INFO | Filas leídas de ingest: 0
+2026-04-18 11:55:19,958 | ERROR | Sin datos en ingest. Ejecutar ingest_ratios_ttm.py e ingest_keymetrics.py primero.
+2026-04-18 11:58:02,522 | INFO | Filas leídas de ingest: 3021
+2026-04-18 11:58:02,523 | INFO | Calculando percentiles Quality...
+2026-04-18 11:58:02,536 | INFO | Calculando percentiles Value...
+2026-04-18 11:58:02,545 | INFO | Scores calculados.
+2026-04-18 11:58:02,707 | ERROR | Error al insertar: numeric field overflow
+DETAIL:  A field with precision 10, scale 6 must round to an absolute value less than 10^4.
+
+2026-04-18 11:58:02,708 | WARNING | No se pudo registrar log: current transaction is aborted, commands ignored until end of transaction block
+
+2026-04-18 12:00:07,732 | INFO | Filas leídas de ingest: 3021
+2026-04-18 12:00:07,733 | INFO | Calculando percentiles Quality...
+2026-04-18 12:00:07,746 | INFO | Calculando percentiles Value...
+2026-04-18 12:00:07,756 | INFO | Scores calculados.
+2026-04-18 12:00:08,155 | INFO | Fin — 3021 empresas procesadas, snapshot=2026-04-01
