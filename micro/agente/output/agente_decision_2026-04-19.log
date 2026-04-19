@@ -1,0 +1,13 @@
+2026-04-19 14:12:58,448 | ERROR | Error en INSERT agente.decision: column reference "estado_macro" is ambiguous
+LINE 90:         CASE estado_macro
+                      ^
+
+2026-04-19 14:15:26,070 | INFO | agente.decision: 206 filas insertadas/actualizadas
+2026-04-19 14:15:26,071 | ERROR | Error en INSERT agente.top: column "actualizado_en" of relation "top" does not exist
+LINE 37:     actualizado_en       = NOW()
+             ^
+
+2026-04-19 14:15:26,076 | INFO | Fin — señales=206 stock=0 csp=206 macro=SLOWDOWN snapshot=2026-04-01
+2026-04-19 14:16:15,583 | INFO | agente.decision: 206 filas insertadas/actualizadas
+2026-04-19 14:16:15,586 | INFO | agente.top: 25 filas insertadas/actualizadas — snapshot=2026-04-01
+2026-04-19 14:16:15,590 | INFO | Fin — señales=206 stock=0 csp=206 macro=SLOWDOWN snapshot=2026-04-01
