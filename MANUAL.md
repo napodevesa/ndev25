@@ -586,3 +586,415 @@ Diagnóstico técnico sectorial (10/04/2026):
   diagnostico      : SEÑAL_MIXTA
   coherencia       : MEDIA
 ```
+
+---
+
+## CAPA MICRO
+
+### 1. Propósito
+
+La capa MICRO es el núcleo cuantitativo del sistema. Toma un universo de ~3.027 empresas USA, calcula scores de calidad y valor para cada una, filtra las ~748 con balances sanos, las enriquece con indicadores técnicos y regresiones históricas, y finalmente aplica un motor determinístico que genera señales de inversión concretas (instrumento, sizing, convicción).
+
+**Pregunta que responde:** "¿Cuáles son las mejores empresas dado el contexto macro y sectorial actual?"
+
+**Conexión con capas anteriores:**
+- Consume `estado_macro` de MACRO → ajusta el `macro_factor` (0.70–1.10) y define si se prefieren instrumentos de income (SLOWDOWN/CONTRACTION) o equity (EXPANSION/RECOVERY).
+- Consume `sector_alineado` de SECTOR → penaliza/bonifica en el score de convicción (+5 puntos si ALIGNED).
+
+---
+
+### 2. Arquitectura de datos — 3 schemas
+
+| Schema | Tabla | Descripción | Filas actuales |
+|--------|-------|-------------|---------------|
+| `ingest` | `ratios_ttm` | Ratios TTM de FMP (22 métricas por empresa) | 3.027 |
+| `ingest` | `keymetrics` | Key metrics TTM de FMP (15 métricas por empresa) | 3.021 |
+| `ingest` | `precios` | Precios EOD ajustados por dividendos, 2 años historia | 1.457.911 |
+| `ingest` | `scores_salud` | Altman Z-score y Piotroski F-score desde FMP | 744 |
+| `ingest` | `keymetrics_hist` | Histórico anual de key metrics (hasta 5 FY por empresa) | 3.718 |
+| `seleccion` | `scores` | Scores Quality + Value + Multifactor para todo el universo | 3.021 |
+| `seleccion` | `universo` | Empresas que pasan el filtro absoluto de calidad | 748 |
+| `seleccion` | `enriquecimiento` | Universo enriquecido: técnicos + salud + regresiones + macro | 748 |
+| `agente` | `decision` | Motor determinístico: señales activas + no_trade | 206 activas |
+| `agente` | `top` | Top 25 por score_conviccion | 25 |
+| `agente` | `notas_ai` | Nota cualitativa generada por Claude | 1 por snapshot |
+
+---
+
+### 3. Universo de empresas
+
+- **Fuente:** `universos.stock_opciones_2026` — 3.027 empresas USA comunes, sin microcaps
+- **Criterio de inclusión:** acciones con opciones listadas en mercados USA (NYSE, NASDAQ, AMEX), excluye ETFs, REITs, ADRs y empresas con market cap < ~$300M
+- **Ingesta:** todos los scripts de `micro/ingest/` leen de esta tabla para obtener la lista de tickers
+
+---
+
+### 4. Pipeline completo
+
+```
+universos.stock_opciones_2026  (3.027 tickers)
+         │
+         ├── ingest_ratios_ttm.py   ──→  ingest.ratios_ttm    (22 métricas TTM)
+         ├── ingest_keymetrics.py   ──→  ingest.keymetrics     (15 métricas TTM)
+         └── ingest_precios.py      ──→  ingest.precios        (EOD incremental)
+                  │
+                  ▼
+         calcular_scores.py ─────────→  seleccion.scores       (3.021 empresas)
+                  │
+                  ▼
+         aplicar_filtro.py ──────────→  seleccion.universo     (748 empresas)
+                  │
+         ┌────────┴────────────────────────────────────────────┐
+         │ ingest_scores.py       → ingest.scores_salud         │
+         │ ingest_keymetrics_hist.py → ingest.keymetrics_hist   │  (datos extra)
+         └────────┬────────────────────────────────────────────┘
+                  ▼
+         enriquecer.py ─────────────→  seleccion.enriquecimiento (748 empresas)
+                  │
+                  ▼
+         agente_decision.py ─────────→  agente.decision         (206 activas)
+                                   └──→  agente.top             (25 top)
+                  │
+                  ▼
+         micro_ai.py ───────────────→  agente.notas_ai          (nota Claude)
+```
+
+---
+
+### 5. Factores del multifactor
+
+El score final combina Quality 60% + Value 40%. Todos los factores se calculan como percentiles dentro del universo (0–100), con clip en p1/p99 para outliers.
+
+| Dimensión | Factor | Métrica fuente | Peso | Por qué |
+|-----------|--------|---------------|------|---------|
+| **QUALITY** | ROIC | `keymetrics.roic` | 25% | Retorno sobre capital — indicador central de ventaja competitiva |
+| QUALITY | Margen operativo | `ratios_ttm.operating_profit_margin` | 20% | Eficiencia operativa del negocio |
+| QUALITY | Calidad de FCF | `ratios_ttm.free_cash_flow_operating_cash_flow_ratio` | 20% | Conversión real de EBIT en caja; penaliza accruals |
+| QUALITY | Cobertura intereses | `ratios_ttm.interest_coverage_ratio` | 20% | Solidez frente a deuda financiera |
+| QUALITY | Income quality | `keymetrics.income_quality` | 15% | FCF vs. net income — detecta earnings de baja calidad |
+| **VALUE** | P/FCF | `ratios_ttm.price_to_free_cash_flow_ratio` | 35% | Valuación sobre flujo real, no contable |
+| VALUE | EV/EBITDA | `keymetrics.ev_to_ebitda` | 30% | Múltiplo más robusto que P/E — neutro a estructura de capital |
+| VALUE | P/E | `ratios_ttm.price_to_earnings_ratio` | 20% | Valuación estándar; negativos se neutralizan (→ 0) |
+| VALUE | P/B | `ratios_ttm.price_to_book_ratio` | 15% | Complemento de valuación relativa a activos |
+
+Los factores VALUE usan `percentil_menor_mejor()` — ratio más bajo = percentil más alto. P/E y P/FCF negativos se convierten en 0 (una empresa con pérdidas no es "barata").
+
+---
+
+### 6. Filtro absoluto
+
+De 3.021 empresas con scores calculados, pasan al universo de trabajo aquellas que cumplen **los 4 criterios simultáneamente:**
+
+| Criterio | Umbral | Lógica |
+|----------|--------|--------|
+| ROIC | > 4% | La empresa genera retorno real sobre capital — excluye negocios que destruyen valor |
+| Net Debt / EBITDA | < 3.0 | Deuda manejable — puede servir obligaciones sin comprometer operaciones |
+| Debt / Equity | < 0.8 | Balance sólido — evita empresas altamente apalancadas |
+| FCF por acción | > 0 | Genera caja real — no solo utilidades contables |
+
+**Resultado actual:** 748 empresas pasan el filtro (de 3.021 con datos completos).
+
+Distribución por market cap tier:
+
+| Tier | Empresas |
+|------|----------|
+| Mid | 258 |
+| Large | 248 |
+| Small | 191 |
+| Micro | 51 |
+
+Top 5 sectores en el universo filtrado:
+
+| Sector | Empresas |
+|--------|----------|
+| Financial Services | 150 |
+| Industrials | 146 |
+| Technology | 128 |
+| Healthcare | 84 |
+| Consumer Cyclical | 76 |
+
+---
+
+### 7. Enriquecimiento
+
+Para cada una de las 748 empresas del universo, `enriquecer.py` calcula y guarda en `seleccion.enriquecimiento`:
+
+**Técnicos** (calculados desde `ingest.precios`, mínimo 210 días de historia):
+
+| Campo | Descripción |
+|-------|-------------|
+| `rsi_14_semanal` | RSI 14 períodos sobre precios semanales |
+| `precio_vs_ma200` | Distancia porcentual al precio de la MA200 |
+| `dist_max_52w` | Distancia al máximo de 52 semanas |
+| `volatilidad_30d` / `volatilidad_90d` | Desviación estándar de retornos diarios |
+| `volume_ratio_20d` | Volumen promedio 20d / volumen promedio 90d |
+| `obv_slope` | Pendiente de OBV (On-Balance Volume) — confirma dirección de volumen |
+| `momentum_3m` / `momentum_6m` / `momentum_12m` | Retorno total en períodos de 63 / 126 / 252 ruedas |
+
+**Salud financiera** (desde FMP `stable/financial-scores`):
+
+| Campo | Descripción | Clasificación |
+|-------|-------------|--------------|
+| `altman_z_score` | Score de probabilidad de distress financiero | safe > 2.99, grey 1.81–2.99, distress < 1.81 |
+| `altman_zona` | Categoría textual | safe / grey / distress |
+| `piotroski_score` | Score 0–9 de solidez fundamental (F-Score) | fuerte ≥ 7, neutral 4–6, debil ≤ 3 |
+| `piotroski_categoria` | Categoría textual | fuerte / neutral / debil |
+
+**Regresiones anuales** (desde `ingest.keymetrics_hist` — scipy.stats.linregress):
+
+| Campo | Descripción |
+|-------|-------------|
+| `roic_tendencia` | Pendiente de la regresión lineal de ROIC en los últimos FYs |
+| `roic_signo` | 1 = mejorando, -1 = deteriorando, 0 = plano |
+| `roic_r2` | R² de la regresión (confiabilidad estadística) |
+| `roic_confiable` | True si n ≥ 3 observaciones y R² ≥ 0.50 |
+| `deuda_tendencia` | Pendiente de la regresión de Net Debt/EBITDA |
+| `deuda_signo` | -1 = bajando (positivo), 1 = subiendo (negativo) |
+| `deuda_r2` / `deuda_confiable` | Igual que ROIC |
+
+**Conexión macro/sector:**
+
+| Campo | Origen |
+|-------|--------|
+| `estado_macro` | `macro.macro_diagnostico` — estado vigente del ciclo |
+| `sector_etf` | Mapeado desde sector GICS (ej: Technology → XLK) |
+| `sector_alineado` | ALIGNED si el ETF sectorial está en estado LEADING / RECOVERY_STRONG en `sector.v_sector_ranking` |
+
+---
+
+### 8. Motor determinístico — agente.decision
+
+El motor es un único `INSERT ... WITH ... SELECT` con 8 CTEs encadenados. Sin reglas hardcodeadas en Python — toda la lógica vive en SQL.
+
+**CTE 1 — tendencia:** Clasifica la trayectoria fundamental de la empresa comparando `roic_signo`, `roic_confiable`, `deuda_signo` y `deuda_confiable`:
+- `mejora_estructural` → ROIC ↑ confiable + deuda ↓ confiable
+- `mejora_parcial` → ROIC ↑ + deuda ↓ (sin confirmar estadísticamente)
+- `deterioro` → ROIC ↓ confiable
+- `sin_tendencia` → resto
+
+**CTE 2 — contexto:** Clasifica la calidad estructural del negocio:
+- `structural_quality` → quality ≥ 70 + value ≥ 40 + Altman ≥ 2.99 + Piotroski ≥ 6 + ROIC ↑
+- `solid_but_expensive` → quality ≥ 70 + Altman ≥ 2.99 (pero sin value atractivo)
+- `improving` → quality ≥ 50 + ROIC ↑ + deuda ↓
+- `structural_risk` → Altman < 1.81 OR Piotroski ≤ 3 OR ROIC ↓ confiable → excluye de señales
+
+**CTE 3 — timing:** Clasifica la entrada técnica:
+- `good_entry` → RSI 40–65 + sobre MA200 + volumen normal
+- `pullback_in_uptrend` → RSI < 40 + sobre MA200 (caída temporal en tendencia alcista)
+- `overbought` → RSI > 75
+- `below_ma200` → precio > 5% por debajo de MA200 → excluye de señales
+- `neutral` → resto
+
+**CTE 4 — macro_ajuste:** Multiplica el sizing por un factor según estado macro:
+- EXPANSION → 1.10 | RECOVERY → 1.05 | SLOWDOWN → 0.85 | CONTRACTION → 0.70
+- En SLOWDOWN/CONTRACTION activa `preferir_income = TRUE`
+
+**CTE 5 — instrumentacion:** Decide el instrumento:
+- `none` si contexto = `structural_risk` o timing = `below_ma200`
+- `cash_secured_put` si `preferir_income` (SLOWDOWN/CONTRACTION)
+- `stock` si contexto = `structural_quality` + timing = `good_entry` o `pullback_in_uptrend` + OBV slope > 0
+- `cash_secured_put` si contexto `structural_quality` + `overbought`, o contextos `solid_but_expensive` / `improving`
+
+**CTE 6 — sizing:** Position size 0.0–1.0, producto de quality/value score × bonos Piotroski × bono tendencia × bono timing × macro_factor.
+
+**CTE 7 — conviccion:** Score 0–100 combinando quality (35%) + value (15%) + bonus timing (10–30) + bonus Piotroski (5–15) + bonus tendencia (0–10) + bonus sector alineado (+5).
+
+**CTE 8 — final / flag_timing:** Rank global por score_conviccion + clasificación del flag de timing:
+- `tecnico_confirmado` → good_entry + OBV > 0
+- `pullback_comprable` → pullback_in_uptrend
+- `esperar_pullback` → overbought
+- `macro_defensivo` → preferir_income activo
+- `fundamental_only` → resto
+
+---
+
+### 9. Scripts — orden de ejecución
+
+#### MENSUAL (primer lunes del mes, post earnings)
+
+| Script | Qué hace | Tiempo est. | Comando |
+|--------|----------|-------------|---------|
+| `ingest_ratios_ttm.py` | Descarga 22 ratios TTM de FMP para 3.027 tickers | ~12 min | `python micro/ingest/ingest_ratios_ttm.py` |
+| `ingest_keymetrics.py` | Descarga 15 key metrics TTM de FMP | ~12 min | `python micro/ingest/ingest_keymetrics.py` |
+| `ingest_precios.py` | Actualiza EOD incremental (solo días nuevos) | ~2 min | `python micro/ingest/ingest_precios.py` |
+| `calcular_scores.py` | Calcula Quality + Value + Multifactor para todo el universo | < 1 min | `python micro/seleccion/calcular_scores.py` |
+| `aplicar_filtro.py` | Aplica 4 filtros absolutos → seleccion.universo | < 1 min | `python micro/seleccion/aplicar_filtro.py` |
+| `ingest_scores.py` | Descarga Altman Z + Piotroski para las 748 empresas | ~3 min | `python micro/seleccion/ingest_scores.py` |
+| `enriquecer.py` | Calcula técnicos + regresiones + conecta macro/sector | ~5 min | `python micro/seleccion/enriquecer.py` |
+| `agente_decision.py` | Ejecuta motor determinístico → agente.decision + agente.top | < 1 min | `python micro/agente/agente_decision.py` |
+| `micro_ai.py` | Genera nota cualitativa con Claude | < 1 min | `python micro/agente/micro_ai.py` |
+
+**Total estimado:** ~36 minutos. Los dos primeros scripts son los más lentos (API rate limit de FMP con sleep 0.25s entre requests).
+
+#### ANUAL (primer lunes de enero)
+
+| Script | Qué hace | Tiempo est. | Comando |
+|--------|----------|-------------|---------|
+| `ingest_keymetrics_hist.py` | Descarga histórico anual de ROIC/deuda para empresas del universo que no tienen datos del FY anterior | ~3 min (incremental) | `python micro/seleccion/ingest_keymetrics_hist.py` |
+
+La lógica es incremental: solo procesa tickers sin datos para el año fiscal anterior (LEFT JOIN por año). Si el universo no cambió y ya hay datos del FY previo, el script sale en segundos.
+
+---
+
+### 10. Queries de verificación
+
+```sql
+-- 1. ¿Cuántas empresas en ingest.ratios_ttm del último run?
+SELECT fecha_consulta, COUNT(*) AS n
+FROM ingest.ratios_ttm
+GROUP BY fecha_consulta
+ORDER BY fecha_consulta DESC
+LIMIT 3;
+-- Esperado: ~3.027 para la fecha más reciente
+
+-- 2. ¿El score promedio del universo es ~50 (por construcción del percentil)?
+SELECT ROUND(AVG(quality_score),1) AS avg_quality,
+       ROUND(AVG(value_score),1)   AS avg_value,
+       ROUND(AVG(multifactor_score),1) AS avg_multi
+FROM seleccion.scores
+WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.scores);
+-- Esperado: quality ~50, value ~50, multi ~50
+
+-- 3. ¿Cuántas empresas pasaron el filtro absoluto?
+SELECT snapshot_date, COUNT(*) AS n_universo
+FROM seleccion.universo
+GROUP BY snapshot_date
+ORDER BY snapshot_date DESC
+LIMIT 1;
+-- Actual: 748
+
+-- 4. ¿El enriquecimiento tiene RSI y MA200 calculados?
+SELECT COUNT(*) AS total,
+       COUNT(rsi_14_semanal) AS con_rsi,
+       COUNT(precio_vs_ma200) AS con_ma200,
+       COUNT(altman_z_score) AS con_altman
+FROM seleccion.enriquecimiento
+WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.enriquecimiento);
+-- Esperado: total=748, con valores altos en los tres
+
+-- 5. ¿Cuántas señales activas generó el agente y en qué instrumento?
+SELECT instrumento, COUNT(*) AS n
+FROM agente.decision
+WHERE trade_status = 'active'
+  AND snapshot_date = (SELECT MAX(snapshot_date) FROM agente.decision)
+GROUP BY instrumento;
+-- Actual: cash_secured_put=206, stock=0
+
+-- 6. ¿Distribución por flag_timing?
+SELECT flag_timing, COUNT(*) AS n
+FROM agente.decision
+WHERE trade_status = 'active'
+  AND snapshot_date = (SELECT MAX(snapshot_date) FROM agente.decision)
+GROUP BY flag_timing ORDER BY n DESC;
+-- Actual: macro_defensivo=123, tecnico_confirmado=53, esperar_pullback=25, pullback_comprable=5
+
+-- 7. ¿La nota AI se generó para este snapshot?
+SELECT snapshot_date, score_conviction, tokens_usados
+FROM agente.notas_ai
+ORDER BY generado_en DESC LIMIT 1;
+-- Actual: 2026-04-01 | score_conviction=72
+
+-- 8. ¿Cuál es el top 3 actual por score_conviccion?
+SELECT rank_conviccion, ticker, score_conviccion, instrumento, flag_timing, sector_alineado
+FROM agente.top
+ORDER BY rank_conviccion
+LIMIT 3;
+-- Actual: #1 MO (97.1), #2 HALO (93.6), #3 PTCT (88.7) — todos CSP
+
+-- 9. ¿Hay empresas en distress en el universo?
+SELECT altman_zona, COUNT(*) AS n
+FROM seleccion.enriquecimiento
+WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.enriquecimiento)
+GROUP BY altman_zona;
+
+-- 10. ¿Cuántos tickers del universo tienen regresión ROIC confiable?
+SELECT roic_signo, roic_confiable, COUNT(*) AS n
+FROM seleccion.enriquecimiento
+WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.enriquecimiento)
+GROUP BY roic_signo, roic_confiable
+ORDER BY roic_signo, roic_confiable;
+```
+
+---
+
+### 11. Errores comunes
+
+| Error | Causa | Solución |
+|-------|-------|----------|
+| `numeric field overflow` | Columna NUMERIC(10,6) recibe valor > 9999 (ej: P/E extremo) | Usar NUMERIC(16,4) o NUMERIC(20,2) según si es ratio o monto |
+| `can't adapt type numpy.bool_` | psycopg2 no acepta tipos numpy nativos | Usar `bool()`, `int()`, `float()` explícitos; o función `safe(val)` |
+| `column X of table Y specified more than once` | INSERT con CTEs referencia la misma columna dos veces | Revisar alias en el SELECT final del CTE |
+| Fechas distintas entre tablas | JOIN entre ratios_ttm y keymetrics con misma `fecha_consulta` que pueden no coincidir | Cada tabla usa su propia subconsulta `MAX(fecha_consulta)` independiente |
+| `column reference X is ambiguous` en CTEs | El nombre de columna existe en la tabla base y en un CTE con ese nombre | Usar alias explícito en el SELECT del CTE base: `m.estado_macro AS estado_macro_actual` |
+| `ingest.scores_salud` vacía | Se ejecutó antes que `aplicar_filtro.py` | El orden es obligatorio: scores_salud lee de `seleccion.universo` |
+| Señales 0 en agente.decision | `seleccion.enriquecimiento` vacío o sin RSI calculado | Verificar que enriquecer.py completó exitosamente (MIN_DIAS = 210 puntos de precios) |
+
+---
+
+### 12. Frecuencia y dependencias
+
+```
+[MACRO]          macro_fred.py → macro_ai.py
+    │
+    │  (estado_macro → enriquecer.py, agente_decision.py)
+    ▼
+[SECTOR]         sector_precios.py → sector_ai.py
+    │
+    │  (sector_alineado → enriquecer.py, agente_decision.py)
+    ▼
+[MICRO INGEST]   ingest_ratios_ttm.py  (mensual)
+                 ingest_keymetrics.py  (mensual)
+                 ingest_precios.py     (semanal — incremental)
+    │
+    ▼
+[MICRO SELECCIÓN] calcular_scores.py → aplicar_filtro.py
+    │
+    ├── ingest_scores.py           (mensual, requiere universo)
+    ├── ingest_keymetrics_hist.py  (anual, enero)
+    │
+    ▼
+[MICRO ENRICH]   enriquecer.py
+                 (requiere: MACRO + SECTOR + ingest.scores_salud + ingest.keymetrics_hist)
+    │
+    ▼
+[AGENTE]         agente_decision.py → micro_ai.py
+```
+
+**Dependencias críticas:**
+- MACRO y SECTOR deben correr antes de `enriquecer.py` — si no hay datos macro recientes, el script igual corre pero `estado_macro` queda desactualizado.
+- `ingest_scores.py` y `enriquecer.py` requieren que `aplicar_filtro.py` ya haya corrido (leen de `seleccion.universo`).
+- `ingest_keymetrics_hist.py` es anual: si ya existen datos del FY anterior para todos los tickers, el script termina inmediatamente sin llamadas a la API.
+- `micro_ai.py` requiere que `agente_decision.py` haya corrido (lee `MAX(snapshot_date)` de `agente.decision`). Es idempotente: si ya existe nota para ese snapshot_date, sale sin llamar a Claude.
+
+---
+
+### 13. Output esperado — último run
+
+**Snapshot:** 2026-04-01 | **Estado macro:** SLOWDOWN
+
+**Señales activas:** 206 (todas `cash_secured_put` — SLOWDOWN activa `preferir_income`)
+
+| Instrumento | Contexto | Señales |
+|-------------|----------|---------|
+| cash_secured_put | improving | 114 |
+| cash_secured_put | solid_but_expensive | 76 |
+| cash_secured_put | structural_quality | 16 |
+
+| Flag timing | Señales |
+|-------------|---------|
+| macro_defensivo | 123 |
+| tecnico_confirmado | 53 |
+| esperar_pullback | 25 |
+| pullback_comprable | 5 |
+
+**Top 3 por score_conviccion:**
+
+| Rank | Ticker | Score | Instrumento | Flag | Sector alineado |
+|------|--------|-------|-------------|------|----------------|
+| #1 | MO | 97.1 | cash_secured_put | macro_defensivo | ALIGNED |
+| #2 | HALO | 93.6 | cash_secured_put | tecnico_confirmado | ALIGNED |
+| #3 | PTCT | 88.7 | cash_secured_put | tecnico_confirmado | ALIGNED |
+
+**Nota AI (agente.notas_ai):** score_conviction = 72 / 100
+
+```
