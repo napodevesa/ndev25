@@ -171,17 +171,27 @@ ORDER BY d.rank_conviccion
 """
 
 SQL_OPCIONES = """
-SELECT ticker, snapshot_date, direccion, contexto,
-       estado_macro, regimen_vix, vix,
-       nivel_iv, iv_promedio, term_structure, liquidez,
-       estrategia, delta_objetivo,
-       put_strike, put_delta, put_theta, put_iv, put_dte,
-       call_strike, sizing, trade_status, notas
-FROM agente_opciones.trade_decision_opciones
-WHERE trade_status = 'active'
-AND snapshot_date = (SELECT MAX(snapshot_date)
-                     FROM agente_opciones.trade_decision_opciones)
-ORDER BY sizing DESC
+SELECT o.ticker, o.snapshot_date,
+       o.direccion, o.contexto, o.tendencia_fundamental,
+       o.estado_macro, o.regimen_vix, o.vix,
+       o.nivel_iv, o.iv_promedio, o.term_structure,
+       o.liquidez, o.estrategia, o.delta_objetivo,
+       o.put_strike, o.put_delta, o.put_theta,
+       o.put_iv, o.put_dte,
+       o.call_strike, o.call_delta, o.call_theta,
+       o.sizing, o.trade_status, o.notas,
+       e.quality_score, e.value_score,
+       e.altman_z_score, e.piotroski_score,
+       e.rsi_14_semanal, e.sector, e.industry,
+       e.roic_signo, e.deuda_signo
+FROM agente_opciones.trade_decision_opciones o
+JOIN seleccion.enriquecimiento e
+    ON  e.ticker = o.ticker
+    AND e.snapshot_date = o.snapshot_date
+WHERE o.snapshot_date = (SELECT MAX(snapshot_date)
+                         FROM agente_opciones.trade_decision_opciones)
+  AND o.trade_status = 'active'
+ORDER BY o.sizing DESC
 """
 
 
@@ -1040,6 +1050,12 @@ LIQUIDEZ_ICONO = {
     "liquido":      "💧 Líquido",
     "semi_liquido": "⚠️ Semi-líquido",
 }
+TENDENCIA_COLOR = {
+    "mejora_estructural": "#057a55",
+    "mejora_parcial":     "#c27803",
+    "deterioro":          "#e02424",
+}
+
 IV_COLOR = {
     "baja":  "#6b7280",
     "media": "#c27803",
@@ -1056,67 +1072,100 @@ def pagina_opciones():
         st.info("No hay estrategias activas.")
         return
 
-    # Conversiones numéricas
     for col_num in ["iv_promedio", "put_strike", "put_delta", "put_theta",
-                    "put_iv", "put_dte", "call_strike", "sizing",
-                    "vix", "delta_objetivo"]:
-        df[col_num] = pd.to_numeric(df[col_num], errors="coerce")
+                    "put_iv", "put_dte", "call_strike", "call_delta", "call_theta",
+                    "sizing", "vix", "delta_objetivo",
+                    "quality_score", "value_score", "altman_z_score", "piotroski_score",
+                    "rsi_14_semanal"]:
+        if col_num in df.columns:
+            df[col_num] = pd.to_numeric(df[col_num], errors="coerce")
 
-    # ── Sección 1: Métricas resumen ──────────────────────────────────────────
-    estrategias_conteo = df["estrategia"].value_counts()
-    n_estrategias = len(estrategias_conteo)
+    # ── Sección 1: Métricas resumen (4 columnas) ─────────────────────────────
+    n_total  = len(df)
+    n_bps    = int((df["estrategia"] == "bull_put_spread").sum())
+    n_csp    = int((df["estrategia"] == "cash_secured_put").sum())
+    iv_mean  = df["iv_promedio"].mean()
+    vix_row  = df.dropna(subset=["vix"]).iloc[0] if not df.dropna(subset=["vix"]).empty else None
 
-    # Fila 1: total + por estrategia
-    cols_met = st.columns(min(n_estrategias + 1, 6))
-    cols_met[0].metric("Total activas", len(df))
-    for col, (est, n) in zip(cols_met[1:], estrategias_conteo.items()):
-        _, _, lbl = ESTRATEGIA_STYLE.get(est, ("#6b7280", "#f9fafb", est))
-        col.metric(lbl, n)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Total estrategias activas", n_total)
+    c2.metric("Bull Put Spread", n_bps, delta=f"CSP: {n_csp}", delta_color="off")
 
-    # Fila 2: VIX y IV promedio del universo
-    vix_row = df.dropna(subset=["vix"]).iloc[0] if not df.dropna(subset=["vix"]).empty else None
-    iv_mean = df["iv_promedio"].mean()
-    c1, c2, c3 = st.columns(3)
     if vix_row is not None:
         vix_v   = float(vix_row["vix"])
-        regimen = str(vix_row.get("regimen_vix") or "—")
-        reg_col = REGIMEN_VIX_COLOR.get(regimen.lower(), "#6b7280")
-        c1.metric("VIX", f"{vix_v:.2f}")
-        c2.markdown(
-            f'<div style="padding-top:8px;">'
-            f'<span style="font-size:.8rem;color:#6b7280;">Régimen VIX</span><br>'
-            f'<span style="color:{reg_col};font-weight:700;font-size:1.1rem;">'
-            f'{regimen.upper()}</span></div>',
+        regimen = str(vix_row.get("regimen_vix") or "").lower()
+        reg_col = REGIMEN_VIX_COLOR.get(regimen, "#6b7280")
+        c3.metric("VIX", f"{vix_v:.2f}")
+        c3.markdown(
+            f'<span style="background:{reg_col}22;color:{reg_col};'
+            f'border:1px solid {reg_col};padding:2px 10px;border-radius:12px;'
+            f'font-weight:700;font-size:.8rem;">{regimen.upper()}</span>',
             unsafe_allow_html=True,
         )
+    else:
+        c3.metric("VIX", "—")
+
     if not pd.isna(iv_mean):
-        c3.metric("IV promedio universo", f"{iv_mean:.1%}")
+        c4.metric("IV promedio universo", f"{iv_mean:.1%}")
+    else:
+        c4.metric("IV promedio universo", "—")
 
     st.divider()
 
     # ── Sección 2: Filtros ───────────────────────────────────────────────────
     fc1, fc2, fc3 = st.columns(3)
     with fc1:
-        opts_est  = ["Todas"] + sorted(df["estrategia"].dropna().unique().tolist())
-        f_est     = st.selectbox("Estrategia", opts_est)
+        opts_est = ["Todas"] + sorted(df["estrategia"].dropna().unique().tolist())
+        f_est    = st.selectbox("Estrategia", opts_est)
     with fc2:
-        opts_iv   = ["Todas"] + sorted(df["nivel_iv"].dropna().unique().tolist())
-        f_iv      = st.selectbox("Nivel IV", opts_iv)
+        opts_iv  = ["Todas"] + sorted(df["nivel_iv"].dropna().unique().tolist())
+        f_iv     = st.selectbox("Nivel IV", opts_iv)
     with fc3:
-        opts_liq  = ["Todas"] + sorted(df["liquidez"].dropna().unique().tolist())
-        f_liq     = st.selectbox("Liquidez", opts_liq)
+        opts_liq = ["Todas"] + sorted(df["liquidez"].dropna().unique().tolist())
+        f_liq    = st.selectbox("Liquidez", opts_liq)
 
     dff = df.copy()
-    if f_est != "Todas":
-        dff = dff[dff["estrategia"] == f_est]
-    if f_iv != "Todas":
-        dff = dff[dff["nivel_iv"] == f_iv]
-    if f_liq != "Todas":
-        dff = dff[dff["liquidez"] == f_liq]
+    if f_est != "Todas": dff = dff[dff["estrategia"] == f_est]
+    if f_iv  != "Todas": dff = dff[dff["nivel_iv"]   == f_iv]
+    if f_liq != "Todas": dff = dff[dff["liquidez"]   == f_liq]
 
     st.caption(f"{len(dff)} estrategia(s) mostrada(s)")
 
-    # ── Secciones 3 + 4: Tabla resumen + expanders ──────────────────────────
+    # ── Sección 3: Tabla principal ────────────────────────────────────────────
+    tabla_cols = ["ticker", "estrategia", "nivel_iv",
+                  "put_strike", "put_dte", "put_delta", "put_theta", "sizing"]
+    tabla = dff[tabla_cols].copy()
+    tabla.columns = ["Ticker", "Estrategia", "Nivel IV",
+                     "Strike", "DTE", "Delta", "Theta", "Sizing"]
+
+    def color_estrategia(val):
+        colores = {
+            "cash_secured_put": "background-color: #d4edda; color: #155724",
+            "bull_put_spread":  "background-color: #cce5ff; color: #004085",
+            "iron_condor":      "background-color: #fff3cd; color: #856404",
+            "jade_lizard":      "background-color: #ffe5d0; color: #7c3200",
+            "calendar_spread":  "background-color: #e2d9f3; color: #432874",
+        }
+        return colores.get(val, "")
+
+    def fmt_sizing_bar(val):
+        if pd.isna(val):
+            return ""
+        pct = min(max(float(val), 0), 1)
+        return f"{pct:.0%}"
+
+    tabla_display = tabla.style.map(color_estrategia, subset=["Estrategia"]).format({
+        "Strike": lambda v: f"${v:.2f}"  if pd.notna(v) else "—",
+        "DTE":    lambda v: f"{int(v)}d" if pd.notna(v) else "—",
+        "Delta":  lambda v: f"{v:.3f}"   if pd.notna(v) else "—",
+        "Theta":  lambda v: f"{v:.4f}"   if pd.notna(v) else "—",
+        "Sizing": fmt_sizing_bar,
+    })
+    st.dataframe(tabla_display, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # ── Sección 4: Expanders por ticker ──────────────────────────────────────
     for _, row in dff.iterrows():
         est      = str(row.get("estrategia") or "")
         ticker   = str(row.get("ticker") or "")
@@ -1127,10 +1176,10 @@ def pagina_opciones():
         sizing   = row.get("sizing")
 
         est_color, est_bg, est_lbl = ESTRATEGIA_STYLE.get(est, ("#6b7280", "#f9fafb", est))
-        strike_s = f"${float(strike):.2f}" if strike is not None and not pd.isna(strike) else "—"
-        dte_s    = f"{int(dte)}d" if dte is not None and not pd.isna(dte) else "—"
-        delta_s  = f"{float(delta_ob):.2f}" if delta_ob is not None and not pd.isna(delta_ob) else "—"
-        sizing_s = f"{float(sizing):.0%}" if sizing is not None and not pd.isna(sizing) else "—"
+        strike_s = f"${float(strike):.2f}" if pd.notna(strike) else "—"
+        dte_s    = f"{int(dte)}d"          if pd.notna(dte)    else "—"
+        delta_s  = f"{float(delta_ob):.2f}" if pd.notna(delta_ob) else "—"
+        sizing_s = f"{float(sizing):.0%}"  if pd.notna(sizing) else "—"
         iv_col   = IV_COLOR.get(nivel_iv.lower(), "#6b7280")
 
         titulo = (
@@ -1140,11 +1189,8 @@ def pagina_opciones():
         )
 
         with st.expander(titulo):
-            # Barra de sizing arriba
-            sizing_norm = min(max(float(sizing) if sizing is not None and not pd.isna(sizing) else 0, 0), 1)
-            st.progress(sizing_norm, text=f"Sizing: {sizing_s}")
 
-            # Badge de estrategia
+            # Badge estrategia
             st.markdown(
                 f'<span style="background:{est_bg};color:{est_color};'
                 f'border:1.5px solid {est_color};padding:4px 14px;border-radius:20px;'
@@ -1158,13 +1204,12 @@ def pagina_opciones():
             # ── Columna A: CONTRATO ──────────────────────────────────────────
             with col_a:
                 st.markdown("**CONTRATO**")
-                if strike is not None and not pd.isna(strike):
+                if pd.notna(strike):
                     st.metric("Put Strike", strike_s)
                 st.markdown(f"Vencimiento en **{dte_s}**")
                 st.markdown(f"Delta objetivo: **{delta_s}**")
-
                 call_s = row.get("call_strike")
-                if call_s is not None and not pd.isna(call_s):
+                if pd.notna(call_s):
                     st.markdown(f"Call Strike: **${float(call_s):.2f}**")
 
             # ── Columna B: VOLATILIDAD ───────────────────────────────────────
@@ -1176,58 +1221,84 @@ def pagina_opciones():
                     unsafe_allow_html=True,
                 )
                 iv_prom = row.get("iv_promedio")
-                if iv_prom is not None and not pd.isna(iv_prom):
+                if pd.notna(iv_prom):
                     st.markdown(f"IV promedio: **{float(iv_prom):.1%}**")
-
                 put_iv = row.get("put_iv")
-                if put_iv is not None and not pd.isna(put_iv):
-                    st.markdown(f"IV del contrato: **{float(put_iv):.1%}**")
-
+                if pd.notna(put_iv):
+                    st.markdown(f"IV contrato: **{float(put_iv):.1%}**")
                 term = str(row.get("term_structure") or "").lower()
-                st.markdown(TERM_ICONO.get(term, f"➡️ {term}") if term else "Term structure: —")
-
-            # ── Columna C: CONTEXTO ──────────────────────────────────────────
-            with col_c:
-                st.markdown("**CONTEXTO**")
-                macro = str(row.get("estado_macro") or "")
-                if macro:
-                    _, mac_color = semaforo(macro)
-                    st.markdown(
-                        f'Macro: <span style="color:{mac_color};font-weight:700;">{macro}</span>',
-                        unsafe_allow_html=True,
-                    )
-
+                if term:
+                    st.markdown(TERM_ICONO.get(term, f"➡️ {term}"))
                 regimen = str(row.get("regimen_vix") or "").lower()
-                reg_col = REGIMEN_VIX_COLOR.get(regimen, "#6b7280")
-                vix_v2  = row.get("vix")
                 if regimen:
+                    reg_col = REGIMEN_VIX_COLOR.get(regimen, "#6b7280")
                     st.markdown(
                         f'Régimen VIX: <span style="color:{reg_col};font-weight:700;">'
                         f'{regimen.upper()}</span>',
                         unsafe_allow_html=True,
                     )
-                if vix_v2 is not None and not pd.isna(vix_v2):
-                    st.markdown(f"VIX: **{float(vix_v2):.2f}**")
 
-                liq = str(row.get("liquidez") or "").lower()
-                st.markdown(LIQUIDEZ_ICONO.get(liq, liq) if liq else "Liquidez: —")
+            # ── Columna C: FUNDAMENTAL ───────────────────────────────────────
+            with col_c:
+                st.markdown("**FUNDAMENTAL**")
 
-            # Pie del expander
+                qs = row.get("quality_score")
+                vs = row.get("value_score")
+                if pd.notna(qs): st.markdown(f"Quality score: **{float(qs):.1f}**")
+                if pd.notna(vs): st.markdown(f"Value score: **{float(vs):.1f}**")
+
+                az = row.get("altman_z_score")
+                if pd.notna(az):
+                    az_zona = "safe" if float(az) >= 2.99 else ("grey" if float(az) >= 1.81 else "distress")
+                    az_color, az_bg = ALTMAN_ZONA_COLOR.get(az_zona, ("#6b7280", "#f9fafb"))
+                    st.markdown(
+                        f'Altman Z: <span style="background:{az_bg};color:{az_color};'
+                        f'padding:1px 8px;border-radius:10px;font-weight:600;">'
+                        f'{float(az):.2f} ({az_zona})</span>',
+                        unsafe_allow_html=True,
+                    )
+
+                pio = row.get("piotroski_score")
+                if pd.notna(pio):
+                    pio_v   = int(pio)
+                    pio_col = "#057a55" if pio_v >= 7 else ("#c27803" if pio_v >= 5 else "#e02424")
+                    st.markdown(
+                        f'Piotroski: <span style="color:{pio_col};font-weight:700;">'
+                        f'{pio_v}/9</span>',
+                        unsafe_allow_html=True,
+                    )
+
+                roic_s = row.get("roic_signo")
+                if roic_s is not None and not pd.isna(roic_s):
+                    roic_txt = "↑ ROIC mejora" if int(roic_s) == 1 else "↓ ROIC cae"
+                    roic_col = "#057a55" if int(roic_s) == 1 else "#e02424"
+                    st.markdown(
+                        f'<span style="color:{roic_col};">{roic_txt}</span>',
+                        unsafe_allow_html=True,
+                    )
+
+                tend = str(row.get("tendencia_fundamental") or "")
+                if tend:
+                    tend_col = TENDENCIA_COLOR.get(tend, "#6b7280")
+                    tend_lbl = tend.replace("_", " ").title()
+                    st.markdown(
+                        f'Tendencia: <span style="color:{tend_col};font-weight:700;">'
+                        f'{tend_lbl}</span>',
+                        unsafe_allow_html=True,
+                    )
+
+            # ── Pie del expander ─────────────────────────────────────────────
+            st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
             theta = row.get("put_theta")
-            if theta is not None and not pd.isna(theta):
-                st.markdown(f"Prima diaria: **${float(theta):.4f}**")
+            if pd.notna(theta):
+                st.markdown(f"Prima diaria estimada: **${float(theta):.4f}**")
+
+            sizing_norm = min(max(float(sizing) if pd.notna(sizing) else 0, 0), 1)
+            st.progress(sizing_norm, text=f"Sizing: {sizing_s}")
 
             notas = row.get("notas")
             if notas:
                 st.caption(f"📝 {notas}")
-
-            dir_v = str(row.get("direccion") or "—")
-            ctx_v = str(row.get("contexto")  or "—").replace("_", " ").title()
-            st.markdown(
-                f'<span style="color:#9ca3af;font-size:.8rem;">'
-                f'Dirección: {dir_v}  ·  Contexto: {ctx_v}</span>',
-                unsafe_allow_html=True,
-            )
 
 
 # ── Página 0: CÓMO FUNCIONA ──────────────────────────────────────────────────
