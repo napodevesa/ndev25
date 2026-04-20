@@ -1,0 +1,13 @@
+2026-04-20 16:02:00,635 | INFO | Macro: SLOWDOWN | VIX: 30.61 | Régimen: elevado
+2026-04-20 16:02:00,639 | ERROR | Error en INSERT trade_decision_opciones: column e.tendencia_fundamental does not exist
+LINE 21:            e.tendencia_fundamental,
+                    ^
+
+2026-04-20 16:03:16,057 | INFO | Macro: SLOWDOWN | VIX: 30.61 | Régimen: elevado
+2026-04-20 16:03:16,058 | ERROR | Error en INSERT trade_decision_opciones: column d.tendencia_fundamental does not exist
+LINE 21:            d.tendencia_fundamental,
+                    ^
+
+2026-04-20 16:05:17,819 | INFO | Macro: SLOWDOWN | VIX: 30.61 | Régimen: elevado
+2026-04-20 16:05:17,848 | INFO | trade_decision_opciones: 119 filas insertadas/actualizadas
+2026-04-20 16:05:17,850 | INFO | Fin — total=119 macro=SLOWDOWN vix=30.61 regimen=elevado

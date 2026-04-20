@@ -88,6 +88,7 @@ INSERT INTO agente.decision (
     target_position_size,
     score_conviccion, rank_conviccion,
     riesgo_principal, notas,
+    tendencia_fundamental,
     trade_status, agent_version
 )
 
@@ -322,6 +323,7 @@ SELECT
         || ' | Tend:' || tendencia_fundamental
         || ' | Timing:' || timing
         AS notas,
+    tendencia_fundamental,
     trade_status,
     'v5.0' AS agent_version
 
@@ -338,10 +340,11 @@ ON CONFLICT (ticker, snapshot_date) DO UPDATE SET
     macro_factor         = EXCLUDED.macro_factor,
     exposicion           = EXCLUDED.exposicion,
     riesgo_principal     = EXCLUDED.riesgo_principal,
-    notas                = EXCLUDED.notas,
-    trade_status         = EXCLUDED.trade_status,
-    agent_version        = EXCLUDED.agent_version,
-    actualizado_en       = NOW()
+    notas                    = EXCLUDED.notas,
+    tendencia_fundamental    = EXCLUDED.tendencia_fundamental,
+    trade_status             = EXCLUDED.trade_status,
+    agent_version            = EXCLUDED.agent_version,
+    actualizado_en           = NOW()
 """
 
 # ── TOP 25 ────────────────────────────────────────────────────────────────────

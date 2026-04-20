@@ -1,0 +1,18 @@
+2026-04-20 15:34:48,614 | INFO | Tickers a procesar: 206
+2026-04-20 15:36:29,620 | INFO | Progreso: 50/206 — OK=39 SIN_DATOS=0 FAIL=11 CONTRATOS=262
+2026-04-20 15:37:15,158 | ERROR | [EME] error de red (intento 1): HTTPSConnectionPool(host='api.polygon.io', port=443): Read timed out. (read timeout=15)
+2026-04-20 15:39:15,918 | INFO | Progreso: 100/206 — OK=81 SIN_DATOS=0 FAIL=19 CONTRATOS=503
+2026-04-20 15:40:55,163 | ERROR | [NPO] error de red (intento 1): HTTPSConnectionPool(host='api.polygon.io', port=443): Read timed out. (read timeout=15)
+2026-04-20 15:42:25,623 | INFO | Progreso: 150/206 — OK=121 SIN_DATOS=0 FAIL=29 CONTRATOS=756
+2026-04-20 15:43:43,120 | INFO | Progreso: 200/206 — OK=161 SIN_DATOS=0 FAIL=39 CONTRATOS=945
+2026-04-20 15:43:53,248 | INFO | Fin — total=206 ok=167 sin_datos=0 fail=39 contratos=985 prom=5.9
+2026-04-20 15:44:15,593 | INFO | Tickers a procesar: 206
+2026-04-20 15:47:23,718 | INFO | Progreso: 50/206 — OK=46 SIN_DATOS=4 FAIL=0 PUTS=263 CALLS=357
+2026-04-20 15:47:40,673 | ERROR | [DIS/put] error de red (intento 1): HTTPSConnectionPool(host='api.polygon.io', port=443): Read timed out. (read timeout=15)
+2026-04-20 15:50:39,474 | ERROR | [HUBB/put] error de red (intento 1): HTTPSConnectionPool(host='api.polygon.io', port=443): Read timed out. (read timeout=15)
+2026-04-20 15:52:32,978 | INFO | Progreso: 100/206 — OK=92 SIN_DATOS=8 FAIL=0 PUTS=503 CALLS=720
+2026-04-20 15:53:20,960 | ERROR | [MCRI/put] error de red (intento 1): HTTPSConnectionPool(host='api.polygon.io', port=443): Read timed out. (read timeout=15)
+2026-04-20 15:55:24,742 | ERROR | [MO/call] error de red (intento 1): HTTPSConnectionPool(host='api.polygon.io', port=443): Read timed out. (read timeout=15)
+2026-04-20 15:58:06,875 | INFO | Progreso: 150/206 — OK=139 SIN_DATOS=11 FAIL=0 PUTS=758 CALLS=1099
+2026-04-20 16:00:32,538 | INFO | Progreso: 200/206 — OK=183 SIN_DATOS=17 FAIL=0 PUTS=945 CALLS=1428
+2026-04-20 16:00:53,363 | INFO | Fin — total=206 ok=189 sin_datos=17 fail=0 puts=982 calls=1478 prom=13.0
