@@ -112,46 +112,21 @@ LIMIT 1
 """
 
 SQL_MICRO = """
-SELECT fs.ticker,
-       fs.quality_percentile,
-       fs.value_percentile,
-       fs.altman_z_score,
-       fs.piotroski_score,
-       fs.roic_signo,
-       fs.roic_confiable,
-       fs.rsi_14_semanal,
-       fs.precio_vs_ma200,
-       fs.snapshot_date
-FROM agente.fundamental_snapshot fs
-JOIN seleccion.universo_trabajo ut ON fs.ticker = ut.ticker
-ORDER BY fs.quality_percentile DESC NULLS LAST, fs.ticker
-"""
-
-SQL_MICRO_CONTEXTOS = """
-SELECT DISTINCT tdd.contexto
-FROM agente.trade_decision_direction tdd
-JOIN seleccion.universo_trabajo ut ON tdd.ticker = ut.ticker
-WHERE tdd.contexto IS NOT NULL
-ORDER BY tdd.contexto
-"""
-
-SQL_MICRO_CON_CONTEXTO = """
-SELECT fs.ticker,
-       tdd.contexto,
-       fs.quality_percentile,
-       fs.value_percentile,
-       fs.altman_z_score,
-       fs.piotroski_score,
-       fs.roic_signo,
-       fs.roic_confiable,
-       fs.rsi_14_semanal,
-       fs.precio_vs_ma200,
-       fs.snapshot_date
-FROM agente.fundamental_snapshot fs
-JOIN seleccion.universo_trabajo ut ON fs.ticker = ut.ticker
-LEFT JOIN agente.trade_decision_direction tdd
-       ON fs.ticker = tdd.ticker AND tdd.trade_status = 'active'
-ORDER BY fs.quality_percentile DESC NULLS LAST, fs.ticker
+SELECT ticker, sector, industry, market_cap_tier,
+       quality_score, value_score, multifactor_score,
+       multifactor_rank, multifactor_percentile,
+       rsi_14_semanal, precio_vs_ma200,
+       volume_ratio_20d, obv_slope,
+       momentum_3m, momentum_6m, momentum_12m,
+       altman_z_score, altman_zona,
+       piotroski_score, piotroski_categoria,
+       roic_tendencia, roic_signo, roic_r2, roic_confiable,
+       deuda_tendencia, deuda_signo, deuda_r2, deuda_confiable,
+       estado_macro, sector_etf, sector_alineado
+FROM seleccion.enriquecimiento
+WHERE snapshot_date = (SELECT MAX(snapshot_date)
+                       FROM seleccion.enriquecimiento)
+ORDER BY multifactor_rank
 """
 
 SQL_DIRECCION = """
@@ -165,27 +140,34 @@ ORDER BY target_position_size DESC, ticker
 
 SQL_METRICAS_SISTEMA = """
 SELECT
-    (SELECT COUNT(*) FROM universos.stock_opciones_2026)                                       AS universo_inicial,
-    (SELECT COUNT(*) FROM seleccion.universo_trabajo
-     WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.universo_trabajo))        AS pasan_calidad,
-    (SELECT COUNT(*) FROM agente.trade_decision_direction
+    (SELECT COUNT(*) FROM universos.stock_opciones_2026)                                    AS universo_inicial,
+    (SELECT COUNT(*) FROM seleccion.universo
+     WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.universo))             AS pasan_calidad,
+    (SELECT COUNT(*) FROM agente.decision
      WHERE trade_status = 'active'
-       AND snapshot_date = (SELECT MAX(snapshot_date) FROM agente.trade_decision_direction))   AS señales_activas,
-    (SELECT COUNT(*) FROM agente.top_seleccion
-     WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM agente.top_seleccion))             AS top_seleccion
+       AND snapshot_date = (SELECT MAX(snapshot_date) FROM agente.decision))                AS señales_activas,
+    (SELECT COUNT(*) FROM agente.top
+     WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM agente.top))                     AS top_seleccion
 """
 
 SQL_TOP_SELECCION = """
-SELECT ticker, snapshot_date, sector, industry,
-       market_cap_tier, contexto, instrumento, flag_timing,
-       quality_percentile, value_percentile, piotroski_score,
-       altman_z_score, rsi_14_semanal, precio_vs_ma200,
-       volume_ratio_20d, roic_signo, roic_confiable,
-       net_debt_ebitda_signo, sector_alineado,
-       score_conviccion, rank_conviccion, target_position_size
-FROM agente.top_seleccion
-WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM agente.top_seleccion)
-ORDER BY rank_conviccion
+SELECT d.ticker, d.snapshot_date,
+       d.sector, d.industry, d.market_cap_tier,
+       d.contexto, d.instrumento, d.flag_timing,
+       d.score_conviccion, d.rank_conviccion,
+       d.target_position_size, d.trade_status,
+       d.sector_alineado, d.estado_macro,
+       e.quality_score, e.value_score,
+       e.altman_z_score, e.piotroski_score,
+       e.rsi_14_semanal, e.precio_vs_ma200,
+       e.volume_ratio_20d
+FROM agente.decision d
+JOIN seleccion.enriquecimiento e
+    ON  e.ticker = d.ticker
+    AND e.snapshot_date = d.snapshot_date
+WHERE d.snapshot_date = (SELECT MAX(snapshot_date) FROM agente.decision)
+  AND d.trade_status = 'active'
+ORDER BY d.rank_conviccion
 """
 
 SQL_OPCIONES = """
@@ -670,69 +652,176 @@ def pagina_sectores():
 
 # ── Página 3: MICRO ──────────────────────────────────────────────────────────
 
+ALTMAN_ZONA_COLOR = {
+    "safe":     ("#057a55", "#f3faf7"),
+    "grey":     ("#c27803", "#fefce8"),
+    "distress": ("#e02424", "#fef2f2"),
+}
+
+SIGNO_LABEL = {1: "↑", 0: "→", -1: "↓"}
+
+
 def pagina_micro():
     st.title("Micro — Universo de trabajo")
 
-    df = query(SQL_MICRO_CON_CONTEXTO)
+    df = query(SQL_MICRO)
 
     if df.empty:
-        st.info("Sin datos en fundamental_snapshot.")
+        st.info("Sin datos en seleccion.enriquecimiento.")
         return
 
-    # Métricas resumen
+    # Conversiones numéricas
+    for col in ["quality_score", "value_score", "multifactor_score", "multifactor_rank",
+                "multifactor_percentile", "rsi_14_semanal", "precio_vs_ma200",
+                "volume_ratio_20d", "momentum_3m", "momentum_6m", "momentum_12m",
+                "altman_z_score", "piotroski_score", "roic_signo", "deuda_signo"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # ── Métricas resumen ─────────────────────────────────────────────────────
+    n_aligned       = int((df["sector_alineado"] == "ALIGNED").sum())
+    n_roic_mejora   = int((df["roic_signo"] == 1).sum())
+    n_deuda_baja    = int((df["deuda_signo"] == -1).sum())
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Empresas en universo", len(df))
-    c2.metric("Quality p50+ (≥50)", int((df["quality_percentile"] >= 50).sum()))
-    c3.metric("Altman Z > 3 (safe)", int((df["altman_z_score"] > 3).sum()))
-    c4.metric("Piotroski ≥ 7", int((df["piotroski_score"] >= 7).sum()))
+    c2.metric("Sector ALIGNED",       n_aligned)
+    c3.metric("ROIC mejorando",        n_roic_mejora)
+    c4.metric("Deuda bajando",         n_deuda_baja)
 
     st.divider()
 
-    # Filtro por contexto
-    contextos_disponibles = sorted(df["contexto"].dropna().unique().tolist())
-    opciones = ["Todos"] + contextos_disponibles
-    filtro = st.selectbox("Filtrar por contexto", opciones)
-    if filtro != "Todos":
-        df = df[df["contexto"] == filtro]
+    # ── Filtros ──────────────────────────────────────────────────────────────
+    ff1, ff2, ff3, ff4, ff5 = st.columns(5)
+    with ff1:
+        opts_sec = ["Todos"] + sorted(df["sector"].dropna().unique().tolist())
+        f_sec = st.selectbox("Sector", opts_sec)
+    with ff2:
+        opts_cap = ["Todos"] + sorted(df["market_cap_tier"].dropna().unique().tolist())
+        f_cap = st.selectbox("Market cap", opts_cap)
+    with ff3:
+        opts_az = ["Todos"] + sorted(df["altman_zona"].dropna().unique().tolist())
+        f_az = st.selectbox("Altman zona", opts_az)
+    with ff4:
+        opts_pio = ["Todos"] + sorted(df["piotroski_categoria"].dropna().unique().tolist())
+        f_pio = st.selectbox("Piotroski cat.", opts_pio)
+    with ff5:
+        opts_alin = ["Todos"] + sorted(df["sector_alineado"].dropna().unique().tolist())
+        f_alin = st.selectbox("Alineado", opts_alin)
 
-    # Formateo
-    df_display = df[[
-        "ticker", "contexto", "quality_percentile", "value_percentile",
-        "altman_z_score", "piotroski_score", "roic_signo", "roic_confiable",
-        "rsi_14_semanal", "precio_vs_ma200",
-    ]].copy()
+    dff = df.copy()
+    if f_sec  != "Todos": dff = dff[dff["sector"]            == f_sec]
+    if f_cap  != "Todos": dff = dff[dff["market_cap_tier"]   == f_cap]
+    if f_az   != "Todos": dff = dff[dff["altman_zona"]       == f_az]
+    if f_pio  != "Todos": dff = dff[dff["piotroski_categoria"] == f_pio]
+    if f_alin != "Todos": dff = dff[dff["sector_alineado"]   == f_alin]
 
-    ROIC_SIGNO = {1: "↑ positivo", 0: "→ plano", -1: "↓ negativo"}
-    df_display["roic_signo"] = df_display["roic_signo"].map(ROIC_SIGNO).fillna("—")
-    df_display["roic_confiable"] = df_display["roic_confiable"].map(
-        {True: "✓", False: "✗"}
-    ).fillna("—")
-    for col_pct in ["quality_percentile", "value_percentile"]:
-        df_display[col_pct] = df_display[col_pct].apply(
-            lambda x: round(float(x), 1) if pd.notna(x) else None
+    st.caption(f"{len(dff)} empresa(s) mostrada(s)")
+
+    # ── Tabla principal ──────────────────────────────────────────────────────
+    def zona_badge(zona: str | None) -> str:
+        if not zona:
+            return "—"
+        color, bg = ALTMAN_ZONA_COLOR.get(zona, ("#6b7280", "#f9fafb"))
+        return f'<span style="background:{bg};color:{color};border:1px solid {color};padding:1px 8px;border-radius:10px;font-size:.72rem;font-weight:600;">{zona}</span>'
+
+    for _, row in dff.iterrows():
+        ticker   = str(row.get("ticker") or "")
+        sector_s = str(row.get("sector") or "—")[:24]
+        cap      = str(row.get("market_cap_tier") or "—")
+        az_zona  = str(row.get("altman_zona") or "")
+        alin     = str(row.get("sector_alineado") or "")
+        rank_v   = row.get("multifactor_rank")
+        multi_v  = row.get("multifactor_score")
+        rank_f   = f"#{int(rank_v)}" if pd.notna(rank_v) else "—"
+        multi_f  = f"{float(multi_v):.1f}" if pd.notna(multi_v) else "—"
+        alin_ico = "✅" if alin == "ALIGNED" else "⬜"
+
+        titulo = (
+            f"{rank_f}  {ticker}  ·  {sector_s}  ·  {cap}  ·  "
+            f"{alin_ico}  ·  Score {multi_f}"
         )
-    for col_num in ["altman_z_score", "rsi_14_semanal", "precio_vs_ma200"]:
-        df_display[col_num] = df_display[col_num].apply(
-            lambda x: round(float(x), 2) if pd.notna(x) else None
-        )
 
-    st.dataframe(
-        df_display,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "ticker":             st.column_config.TextColumn("Ticker", width=80),
-            "contexto":           st.column_config.TextColumn("Contexto"),
-            "quality_percentile": st.column_config.NumberColumn("Quality %ile", format="%.1f"),
-            "value_percentile":   st.column_config.NumberColumn("Value %ile",   format="%.1f"),
-            "altman_z_score":     st.column_config.NumberColumn("Altman Z",     format="%.2f"),
-            "piotroski_score":    st.column_config.NumberColumn("Piotroski F",  format="%d"),
-            "roic_signo":         st.column_config.TextColumn("ROIC tendencia"),
-            "roic_confiable":     st.column_config.TextColumn("Confiable"),
-            "rsi_14_semanal":     st.column_config.NumberColumn("RSI 14s",      format="%.1f"),
-            "precio_vs_ma200":    st.column_config.NumberColumn("vs MA200",     format="%.2f"),
-        },
-    )
+        with st.expander(titulo):
+            az_v = row.get("altman_z_score")
+            if pd.notna(az_v):
+                az_color, az_bg = ALTMAN_ZONA_COLOR.get(az_zona, ("#6b7280", "#f9fafb"))
+                st.markdown(
+                    f'<div style="background:{az_bg};border-left:4px solid {az_color};'
+                    f'padding:4px 10px;border-radius:4px;margin-bottom:8px;font-size:.8rem;">'
+                    f'Altman Z: <strong>{float(az_v):.2f}</strong> — {zona_badge(az_zona)}</div>',
+                    unsafe_allow_html=True,
+                )
+
+            col_a, col_b, col_c, col_d = st.columns(4)
+
+            # Col A — Scores
+            with col_a:
+                st.markdown("**Scores**")
+                qs = row.get("quality_score")
+                vs = row.get("value_score")
+                ms = row.get("multifactor_score")
+                st.metric("Quality",     f"{float(qs):.1f}"  if pd.notna(qs) else "—")
+                st.metric("Value",       f"{float(vs):.1f}"  if pd.notna(vs) else "—")
+                st.metric("Multifactor", f"{float(ms):.1f}"  if pd.notna(ms) else "—")
+
+            # Col B — Técnico
+            with col_b:
+                st.markdown("**Técnico**")
+                rsi = row.get("rsi_14_semanal")
+                ma  = row.get("precio_vs_ma200")
+                m3  = row.get("momentum_3m")
+                m6  = row.get("momentum_6m")
+                if pd.notna(rsi):
+                    rv = float(rsi)
+                    rc = "#057a55" if 40 <= rv <= 65 else ("#e02424" if rv < 40 else "#c27803")
+                    st.markdown(f'RSI 14s: <span style="color:{rc};font-weight:700;">{rv:.1f}</span>', unsafe_allow_html=True)
+                else:
+                    st.markdown("RSI 14s: —")
+                if pd.notna(ma):
+                    mv = float(ma); mc = "#057a55" if mv >= 0 else "#e02424"
+                    st.markdown(f'vs MA200: <span style="color:{mc};font-weight:700;">{mv:+.2f}%</span>', unsafe_allow_html=True)
+                else:
+                    st.markdown("vs MA200: —")
+                st.markdown(f"Mom 3m: **{f'{float(m3):.1f}%' if pd.notna(m3) else '—'}**")
+                st.markdown(f"Mom 6m: **{f'{float(m6):.1f}%' if pd.notna(m6) else '—'}**")
+
+            # Col C — Salud / signos
+            with col_c:
+                st.markdown("**Salud**")
+                ps = row.get("piotroski_score")
+                rs = row.get("roic_signo")
+                rc_conf = row.get("roic_confiable")
+                ds = row.get("deuda_signo")
+                dc_conf = row.get("deuda_confiable")
+                if pd.notna(ps):
+                    pv = int(ps)
+                    pc = "#057a55" if pv >= 7 else ("#c27803" if pv >= 4 else "#e02424")
+                    st.markdown(f'Piotroski: <span style="color:{pc};font-weight:700;">{pv}</span>', unsafe_allow_html=True)
+                else:
+                    st.markdown("Piotroski: —")
+                roic_lbl = SIGNO_LABEL.get(int(rs) if pd.notna(rs) else None, "—")
+                deuda_lbl = SIGNO_LABEL.get(int(ds) if pd.notna(ds) else None, "—")
+                conf_r = "✓" if rc_conf else "—"
+                conf_d = "✓" if dc_conf else "—"
+                st.markdown(f"ROIC: **{roic_lbl}** {conf_r}")
+                st.markdown(f"Deuda: **{deuda_lbl}** {conf_d}")
+
+            # Col D — Regresiones
+            with col_d:
+                st.markdown("**Regresiones**")
+                for lbl, trend_col, r2_col, conf_col in [
+                    ("ROIC",  "roic_tendencia",  "roic_r2",  "roic_confiable"),
+                    ("Deuda", "deuda_tendencia", "deuda_r2", "deuda_confiable"),
+                ]:
+                    tv = row.get(trend_col)
+                    r2 = row.get(r2_col)
+                    cv = row.get(conf_col)
+                    tv_f = f"{float(tv):+.4f}" if pd.notna(tv) else "—"
+                    r2_f = f"R²={float(r2):.2f}" if pd.notna(r2) else ""
+                    cv_f = " ✓" if cv else ""
+                    st.markdown(f"{lbl}: **{tv_f}** {r2_f}{cv_f}")
+
+            ind = str(row.get("industry") or "—")
+            st.caption(f"{sector_s} · {ind} · {cap}")
 
 
 # ── Página 4: ESTRATEGIA ─────────────────────────────────────────────────────
@@ -763,14 +852,14 @@ def pagina_estrategia():
     df = query(SQL_TOP_SELECCION)
 
     if df.empty:
-        st.info("Sin datos en agente.top_seleccion.")
+        st.info("Sin datos en agente.decision.")
         return
 
     # Conversiones de tipo para comparaciones seguras
-    for col_num in ["quality_percentile", "value_percentile", "score_conviccion",
+    for col_num in ["quality_score", "value_score", "score_conviccion",
                     "altman_z_score", "rsi_14_semanal", "precio_vs_ma200", "volume_ratio_20d"]:
         df[col_num] = pd.to_numeric(df[col_num], errors="coerce")
-    for col_int in ["piotroski_score", "roic_signo", "net_debt_ebitda_signo", "rank_conviccion"]:
+    for col_int in ["piotroski_score", "rank_conviccion"]:
         df[col_int] = pd.to_numeric(df[col_int], errors="coerce")
 
     # ── Sección 1: Métricas resumen ──────────────────────────────────────────
@@ -855,10 +944,10 @@ def pagina_estrategia():
             # ── Columna A: FUNDAMENTAL ───────────────────────────────────────
             with col_a:
                 st.markdown("**FUNDAMENTAL**")
-                qp = row.get("quality_percentile")
-                vp = row.get("value_percentile")
-                st.metric("Quality %ile", f"{float(qp):.1f}" if qp is not None and not pd.isna(qp) else "—")
-                st.metric("Value %ile",   f"{float(vp):.1f}" if vp is not None and not pd.isna(vp) else "—")
+                qs = row.get("quality_score")
+                vs = row.get("value_score")
+                st.metric("Quality score", f"{float(qs):.1f}" if qs is not None and not pd.isna(qs) else "—")
+                st.metric("Value score",   f"{float(vs):.1f}" if vs is not None and not pd.isna(vs) else "—")
                 ctx = str(row.get("contexto") or "")
                 if ctx:
                     st.markdown(
@@ -920,21 +1009,6 @@ def pagina_estrategia():
                     )
                 else:
                     st.markdown("Piotroski F: —")
-
-                roic_s = row.get("roic_signo")
-                roic_txt = {1: "↑ Mejorando", 0: "→ Estable", -1: "↓ Deteriorando"}.get(
-                    int(roic_s) if roic_s is not None and not pd.isna(roic_s) else None, "—"
-                )
-                confiable = row.get("roic_confiable")
-                confiable_txt = "✓ Confiable" if confiable else "— Pocos datos"
-                st.markdown(f"ROIC: **{roic_txt}**")
-                st.markdown(f"ROIC fiabilidad: **{confiable_txt}**")
-
-                nd_signo = row.get("net_debt_ebitda_signo")
-                nd_txt = {-1: "↓ Bajando", 0: "→ Estable", 1: "↑ Subiendo"}.get(
-                    int(nd_signo) if nd_signo is not None and not pd.isna(nd_signo) else None, "—"
-                )
-                st.markdown(f"Net Debt/EBITDA: **{nd_txt}**")
 
             # Info de sector/industria/cap
             ind   = str(row.get("industry") or "—")
@@ -1296,7 +1370,7 @@ def pagina_como_funciona():
             (n1, "Universo USA",             "universos.stock_opciones_2026"),
             (n2, "Filtro calidad de balance", "ROIC · D/E · NetDebt/EBITDA · FCF"),
             (n3, "Señal activa",             "Dirección + timing técnico"),
-            (n4, "Mayor convicción",         "top_seleccion · score ≥ umbral"),
+            (n4, "Mayor convicción",         "agente.top · score ≥ umbral"),
         ]
 
         # Fila de métricas
@@ -1385,21 +1459,22 @@ def leer_contexto_sistema() -> str:
             cur.execute("""
                 SELECT COUNT(*) AS total,
                        COUNT(*) FILTER (WHERE instrumento = 'stock') AS n_stock,
-                       COUNT(*) FILTER (WHERE instrumento = 'cash_secured_put') AS n_csp
-                FROM agente.trade_decision_direction
+                       COUNT(*) FILTER (WHERE instrumento = 'cash_secured_put') AS n_csp,
+                       MODE() WITHIN GROUP (ORDER BY flag_timing) AS timing_dominante
+                FROM agente.decision
                 WHERE trade_status = 'active'
                   AND snapshot_date = (SELECT MAX(snapshot_date)
-                                       FROM agente.trade_decision_direction)
+                                       FROM agente.decision)
             """)
             señales = cur.fetchone() or {}
 
             cur.execute("""
-                SELECT ticker, sector, instrumento, score_conviccion,
-                       flag_timing, sector_alineado,
-                       quality_percentile, piotroski_score, altman_z_score
-                FROM agente.top_seleccion
+                SELECT ticker, sector, instrumento,
+                       score_conviccion, flag_timing,
+                       sector_alineado
+                FROM agente.top
                 WHERE snapshot_date = (SELECT MAX(snapshot_date)
-                                       FROM agente.top_seleccion)
+                                       FROM agente.top)
                 ORDER BY rank_conviccion
                 LIMIT 5
             """)
@@ -1417,14 +1492,11 @@ def leer_contexto_sistema() -> str:
     lineas_top5 = []
     for r in top5:
         score = f"{float(r['score_conviccion']):.1f}" if r.get("score_conviccion") else "—"
-        qp    = f"{float(r['quality_percentile']):.0f}" if r.get("quality_percentile") else "—"
-        az    = f"{float(r['altman_z_score']):.2f}" if r.get("altman_z_score") else "—"
-        ps    = str(r.get("piotroski_score") or "—")
         lineas_top5.append(
             f"  {r.get('ticker','?'):<6} | {str(r.get('sector',''))[:22]:<22} | "
             f"{str(r.get('instrumento','')):<18} | score {score} | "
             f"timing: {r.get('flag_timing','—')} | "
-            f"quality%: {qp} | Piotroski: {ps} | Altman: {az}"
+            f"alineado: {r.get('sector_alineado','—')}"
         )
     tabla_top5 = "\n".join(lineas_top5) if lineas_top5 else "  Sin datos"
 
@@ -1447,6 +1519,7 @@ SECTORES:
 
 SEÑALES ACTIVAS:
 - Total: {señales.get('total', 0)} | Stock: {señales.get('n_stock', 0)} | CSP: {señales.get('n_csp', 0)}
+- Timing dominante: {señales.get('timing_dominante', '—')}
 
 TOP 5 EMPRESAS POR CONVICCIÓN:
 {tabla_top5}
