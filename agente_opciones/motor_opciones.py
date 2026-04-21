@@ -106,7 +106,7 @@ iv_por_ticker AS (
                ELSE                     'alta'
            END AS nivel_iv
     FROM agente_opciones.contratos_raw
-    WHERE fecha = CURRENT_DATE
+    WHERE fecha = (SELECT MAX(fecha) FROM agente_opciones.contratos_raw)
       AND iv IS NOT NULL
     GROUP BY ticker
 ),
@@ -123,7 +123,7 @@ term_structure AS (
                ELSE 'flat'
            END AS term_structure
     FROM agente_opciones.contratos_raw
-    WHERE fecha = CURRENT_DATE
+    WHERE fecha = (SELECT MAX(fecha) FROM agente_opciones.contratos_raw)
     GROUP BY ticker
 ),
 
@@ -137,7 +137,7 @@ liquidez AS (
                ELSE 'iliquido'
            END AS liquidez
     FROM agente_opciones.contratos_raw
-    WHERE fecha = CURRENT_DATE
+    WHERE fecha = (SELECT MAX(fecha) FROM agente_opciones.contratos_raw)
     GROUP BY ticker
 ),
 
@@ -151,7 +151,7 @@ mejor_put AS (
         dte    AS put_dte
     FROM agente_opciones.contratos_raw
     WHERE contract_type = 'put'
-      AND fecha = CURRENT_DATE
+      AND fecha = (SELECT MAX(fecha) FROM agente_opciones.contratos_raw)
       AND oi >= 5
     ORDER BY ticker, ABS(theta) DESC NULLS LAST
 ),
@@ -165,7 +165,7 @@ mejor_call AS (
         iv     AS call_iv
     FROM agente_opciones.contratos_raw
     WHERE contract_type = 'call'
-      AND fecha = CURRENT_DATE
+      AND fecha = (SELECT MAX(fecha) FROM agente_opciones.contratos_raw)
       AND oi >= 5
     ORDER BY ticker, ABS(theta) DESC NULLS LAST
 ),

@@ -1,0 +1,6 @@
+2026-04-21 11:35:42,433 | INFO | Macro: SLOWDOWN | VIX: 18.87 | Régimen: normal
+2026-04-21 11:35:42,440 | INFO | trade_decision_opciones: 0 filas insertadas/actualizadas
+2026-04-21 11:35:42,443 | INFO | Fin — total=0 macro=SLOWDOWN vix=18.87 regimen=normal
+2026-04-21 11:39:49,040 | INFO | Macro: SLOWDOWN | VIX: 18.87 | Régimen: normal
+2026-04-21 11:39:49,067 | INFO | trade_decision_opciones: 119 filas insertadas/actualizadas
+2026-04-21 11:39:49,070 | INFO | Fin — total=119 macro=SLOWDOWN vix=18.87 regimen=normal
