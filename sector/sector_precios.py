@@ -2,7 +2,7 @@
 """
 sector_precios.py
 
-Descarga precios diarios de 63 ETFs sectoriales desde Polygon,
+Descarga precios diarios de 63 ETFs sectoriales desde FMP,
 calcula indicadores técnicos de fuerza relativa vs SPY
 y guarda el snapshot en sector.sector_snapshot.
 
@@ -28,9 +28,9 @@ POSTGRES_USER     = os.getenv("POSTGRES_USER")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 POSTGRES_HOST     = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT     = os.getenv("POSTGRES_PORT", "5433")
-POLYGON_API_KEY   = os.getenv("POLYGON_API_KEY")
+FMP_API_KEY = os.getenv("FMP_API_KEY")
 
-if not all([POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, POLYGON_API_KEY]):
+if not all([POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, FMP_API_KEY]):
     raise EnvironmentError("Faltan variables de entorno. Verificar .env")
 
 RUN_ID    = datetime.now().strftime("%Y%m%d_%H%M")
@@ -68,40 +68,64 @@ def ultima_fecha_en_db(conn, ticker: str):
         cur.execute(sql, (ticker,))
         return cur.fetchone()[0]
 
-# ── Descarga Polygon ───────────────────────────────────────────────────────────
-def descargar_precios(ticker: str, desde: str, hasta: str) -> pd.DataFrame | None:
+# ── Descarga FMP ───────────────────────────────────────────────────────────────
+def fetch_precios_fmp(ticker, desde, hasta, api_key):
     url = (
-        f"https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day"
-        f"/{desde}/{hasta}"
-        f"?adjusted=true&sort=asc&limit=5000&apiKey={POLYGON_API_KEY}"
+        f"https://financialmodelingprep.com/stable/"
+        f"historical-price-eod/dividend-adjusted"
+        f"?symbol={ticker}&from={desde}&to={hasta}"
+        f"&apikey={api_key}"
     )
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code == 429:
+            return None, "rate_limit"
+        if r.status_code != 200:
+            return None, f"HTTP {r.status_code}"
+        data = r.json()
+        if not data or isinstance(data, dict):
+            return [], "sin_datos"
+
+        filas = []
+        for d in data:
+            fecha = d.get("date")
+            close = d.get("adjClose") or d.get("close")
+            volume = d.get("volume", 0)
+            if fecha and close:
+                filas.append({
+                    "fecha":  fecha,
+                    "close":  float(close),
+                    "volume": int(volume) if volume else 0
+                })
+        return filas, "ok"
+    except Exception as e:
+        return None, str(e)
+
+
+def descargar_precios(ticker: str, desde: str, hasta: str) -> pd.DataFrame | None:
     for intento in range(1, MAX_REINTENTOS + 1):
-        try:
-            r = requests.get(url, timeout=15)
-            if r.status_code == 429:
-                print(f"\n  ⏳ Rate limit en {ticker} (intento {intento}/{MAX_REINTENTOS}) "
-                      f"— esperando {SLEEP_EN_429}s...")
-                time.sleep(SLEEP_EN_429)
-                continue
-            r.raise_for_status()
-            data = r.json()
-            if "results" not in data or not data["results"]:
-                print(f"  ⚠ Sin datos: {ticker}")
-                return None
-            df = pd.DataFrame(data["results"])
-            df["fecha"] = pd.to_datetime(df["t"], unit="ms").dt.date
-            df = df.rename(columns={"o":"open","h":"high","l":"low",
-                                    "c":"close","v":"volume","vw":"vwap"})
-            cols = [c for c in ["fecha","open","high","low","close","volume","vwap"] if c in df.columns]
-            time.sleep(SLEEP_ENTRE_REQUESTS)
-            return df[cols].copy()
-        except Exception as e:
+        filas, estado = fetch_precios_fmp(ticker, desde, hasta, FMP_API_KEY)
+        if estado == "rate_limit":
+            print(f"\n  ⏳ Rate limit en {ticker} (intento {intento}/{MAX_REINTENTOS}) "
+                  f"— esperando {SLEEP_EN_429}s...")
+            time.sleep(SLEEP_EN_429)
+            continue
+        if estado == "sin_datos" or filas == []:
+            print(f"  ⚠ Sin datos: {ticker}")
+            return None
+        if filas is None:
             if intento < MAX_REINTENTOS:
-                print(f"\n  ⚠ Error {ticker} (intento {intento}): {e} — reintentando...")
+                print(f"\n  ⚠ Error {ticker} (intento {intento}): {estado} — reintentando...")
                 time.sleep(SLEEP_EN_429)
             else:
-                print(f"  ✗ Error descargando {ticker}: {e}")
+                print(f"  ✗ Error descargando {ticker}: {estado}")
                 return None
+            continue
+        df = pd.DataFrame(filas)
+        df["fecha"] = pd.to_datetime(df["fecha"]).dt.date
+        df = df.sort_values("fecha")
+        time.sleep(SLEEP_ENTRE_REQUESTS)
+        return df[["fecha", "close", "volume"]].copy()
     return None
 
 # ── INSERT sector_raw ──────────────────────────────────────────────────────────
@@ -312,7 +336,7 @@ def main():
     print(f"  Tickers en catálogo: {len(tickers)}\n")
 
     # Paso 1: descargar precios
-    print("  [1/3] Descargando precios desde Polygon...")
+    print("  [1/3] Descargando precios desde FMP...")
     for t in tickers:
         ticker = t["ticker"]
         ultima = ultima_fecha_en_db(conn, ticker)

@@ -111,6 +111,22 @@ ORDER BY generado_en DESC
 LIMIT 1
 """
 
+SQL_SECTOR_GICS = """
+SELECT ticker, industria, estado, alineacion_macro,
+       rsi_rs_semanal, ret_3m, ret_1m, score_total
+FROM sector.v_sector_ranking
+WHERE tipo = 'sector'
+  AND ticker IN ('XLK','XLV','XLF','XLI','XLE',
+                 'XLP','XLY','XLC','XLB','XLRE','XLU')
+ORDER BY score_total DESC
+"""
+
+SQL_SECTOR_TOP_BOTTOM = """
+SELECT ticker, industria, rsi_rs_semanal, ret_3m, score_total
+FROM sector.v_sector_ranking
+ORDER BY score_total DESC
+"""
+
 SQL_MICRO = """
 SELECT ticker, sector, industry, market_cap_tier,
        quality_score, value_score, multifactor_score,
@@ -168,6 +184,32 @@ JOIN seleccion.enriquecimiento e
 WHERE d.snapshot_date = (SELECT MAX(snapshot_date) FROM agente.decision)
   AND d.trade_status = 'active'
 ORDER BY d.rank_conviccion
+"""
+
+SQL_ESTRATEGIA_CARDS = """
+SELECT
+    t.ticker, t.rank_conviccion, t.score_conviccion,
+    t.instrumento, t.contexto, t.flag_timing,
+    t.sector_alineado, t.target_position_size,
+    e.sector, e.industry, e.market_cap_tier,
+    e.quality_score, e.value_score,
+    e.rsi_14_semanal, e.precio_vs_ma200,
+    e.volume_ratio_20d, e.momentum_3m,
+    e.altman_z_score, e.altman_zona,
+    e.piotroski_score, e.piotroski_categoria,
+    e.roic_signo, e.deuda_signo
+FROM agente.top t
+JOIN seleccion.enriquecimiento e
+    ON  e.ticker = t.ticker
+    AND e.snapshot_date = t.snapshot_date
+WHERE t.snapshot_date = (SELECT MAX(snapshot_date) FROM agente.top)
+ORDER BY t.rank_conviccion
+"""
+
+SQL_MACRO_ESTADO = """
+SELECT estado_macro, score_riesgo, vix
+FROM macro.macro_diagnostico
+ORDER BY calculado_en DESC LIMIT 1
 """
 
 SQL_OPCIONES = """
@@ -360,304 +402,250 @@ def pagina_macro():
 
 # ── Página 2: SECTORES ───────────────────────────────────────────────────────
 
+SECTOR_NOMBRE = {
+    "XLK":  "Tecnología",
+    "XLV":  "Salud",
+    "XLF":  "Financiero",
+    "XLI":  "Industrial",
+    "XLE":  "Energía",
+    "XLP":  "Consumo básico",
+    "XLY":  "Consumo discrecional",
+    "XLC":  "Comunicaciones",
+    "XLB":  "Materiales",
+    "XLRE": "Inmobiliario",
+    "XLU":  "Utilities",
+}
+
+ESTADO_SECTOR = {
+    "LEADING_STRONG": ("🟢", "#f0fdf4", "#16a34a"),
+    "LEADING_WEAK":   ("🟡", "#fefce8", "#ca8a04"),
+    "NEUTRAL":        ("⬜", "#f9fafb", "#9ca3af"),
+    "LAGGING":        ("🔴", "#fef2f2", "#dc2626"),
+}
+
+DIAG_BANNER = {
+    "CONFIRMA_SLOWDOWN":    ("🔵", "El mercado busca refugio",              "#eff6ff", "#2563eb", "#1e3a8a"),
+    "CONFIRMA_EXPANSION":   ("🟢", "El mercado está en modo ofensivo",      "#f0fdf4", "#16a34a", "#14532d"),
+    "SEÑAL_MIXTA":          ("🟡", "Sin dirección clara en sectores",        "#fefce8", "#ca8a04", "#713f12"),
+    "ROTACION_DEFENSIVA":   ("🟠", "Rotación hacia sectores defensivos",     "#fff7ed", "#ea580c", "#7c2d12"),
+    "CONFIRMA_CONTRACTION": ("🔴", "El mercado está en contracción",         "#fef2f2", "#dc2626", "#7f1d1d"),
+}
+
+
 def pagina_sectores():
     st.title("Sectores")
 
-    sector   = query(SQL_SECTOR)
-    diag_tec = query(SQL_SECTOR_DIAG_TEC)
-    ranking  = query(SQL_SECTOR_RANKING)
-    nota     = query(SQL_SECTOR_NOTA)
+    diag_tec   = query(SQL_SECTOR_DIAG_TEC)
+    df_gics    = query(SQL_SECTOR_GICS)
+    df_all     = query(SQL_SECTOR_TOP_BOTTOM)
+    ranking    = query(SQL_SECTOR_RANKING)
+    nota       = query(SQL_SECTOR_NOTA)
 
-    # ── Sección 1: Header con contexto global ───────────────────────────────
-    ROTACION_BADGE = {
-        "ROTACION_CLARA":    ("#057a55", "#f3faf7", "Rotación clara"),
-        "ROTACION_MODERADA": ("#c27803", "#fdf6b2", "Rotación moderada"),
-        "SIN_TENDENCIA":     ("#6b7280", "#f9fafb", "Sin tendencia"),
-        "MERCADO_DEBIL":     ("#e02424", "#fdf2f2", "Mercado débil"),
-    }
-
-    if not sector.empty:
-        s = sector.iloc[0]
-        estado_macro  = str(s.get("estado_macro") or "—")
-        señal         = str(s.get("señal_rotacion") or "SIN_TENDENCIA").upper()
-        score_univ    = s.get("score_universo")
-
-        col_macro, col_badge, col_score = st.columns([2, 3, 1])
-
-        with col_macro:
-            emoji, color = semaforo(estado_macro)
-            st.markdown(
-                f'<div style="padding:10px 0;">'
-                f'<span style="font-size:.85rem;color:#6b7280;">Estado macro</span><br>'
-                f'<span style="font-size:1.4rem;font-weight:700;color:{color};">'
-                f'{emoji} {estado_macro}</span></div>',
-                unsafe_allow_html=True,
-            )
-
-        with col_badge:
-            border, bg, label = ROTACION_BADGE.get(señal, ("#6b7280", "#f9fafb", señal))
-            st.markdown(
-                f'<div style="padding:10px 0;">'
-                f'<span style="font-size:.85rem;color:#6b7280;">Señal de rotación</span><br>'
-                f'<span style="background:{bg};color:{border};border:1.5px solid {border};'
-                f'padding:4px 14px;border-radius:20px;font-weight:700;font-size:1rem;">'
-                f'{label}</span></div>',
-                unsafe_allow_html=True,
-            )
-
-        with col_score:
-            if score_univ is not None:
-                st.metric("Score universo", f"{float(score_univ):.1f}")
-
-    st.divider()
-
-    # ── Diagnóstico Técnico Sectorial ────────────────────────────────────────
-    st.subheader("Diagnóstico Técnico Sectorial")
-
+    # ── Sección 1: Banner diagnóstico ────────────────────────────────────────
     if not diag_tec.empty:
-        dt = diag_tec.iloc[0]
-
-        # Fila 1 — RSI por grupo
-        def _color_rsi(v):
-            if v is None or pd.isna(v):
-                return "#6b7280"
-            return "#057a55" if float(v) > 65 else ("#c27803" if float(v) >= 50 else "#e02424")
-
-        c1, c2, c3 = st.columns(3)
-        for col, label, campo in [
-            (c1, "RSI Defensivos", "score_defensivos"),
-            (c2, "RSI Cíclicos",   "score_ciclicos"),
-            (c3, "RSI Mixtos",     "score_mixtos"),
-        ]:
-            val = dt.get(campo)
-            val_f = f"{float(val):.1f}" if val is not None and not pd.isna(val) else "—"
-            color = _color_rsi(val)
-            col.markdown(
-                f'<div style="border-left:5px solid {color};background:{color}11;'
-                f'padding:12px 16px;border-radius:6px;">'
-                f'<div style="font-size:.8rem;color:#6b7280;">{label}</div>'
-                f'<div style="font-size:2rem;font-weight:700;color:{color};">{val_f}</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-        st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-
-        # Fila 2 — Diagnóstico y coherencia
-        DIAG_BADGE = {
-            "CONFIRMA_SLOWDOWN":    ("#1d4ed8", "#eff6ff", "Confirma Slowdown"),
-            "CONFIRMA_EXPANSION":   ("#057a55", "#f3faf7", "Confirma Expansión"),
-            "CONFIRMA_CONTRACTION": ("#e02424", "#fdf2f2", "Confirma Contracción"),
-            "SEÑAL_MIXTA":          ("#6b7280", "#f9fafb", "Señal mixta"),
-        }
-        COHERENCIA_BADGE = {
-            "ALTA":       ("#057a55", "#f3faf7", "Alta"),
-            "MEDIA":      ("#c27803", "#fdf6b2", "Media"),
-            "CONTRADICE": ("#e02424", "#fdf2f2", "Contradice"),
-        }
-
-        col_diag, col_coh = st.columns(2)
-        with col_diag:
-            diag_key = str(dt.get("diagnostico_sector") or "").upper()
-            bd, bg, bl = DIAG_BADGE.get(diag_key, ("#6b7280", "#f9fafb", diag_key or "—"))
-            st.markdown(
-                f'<div style="font-size:.8rem;color:#6b7280;margin-bottom:6px;">Diagnóstico sectorial</div>'
-                f'<span style="background:{bg};color:{bd};border:1.5px solid {bd};'
-                f'padding:6px 18px;border-radius:20px;font-weight:700;font-size:1.05rem;">'
-                f'{bl}</span>',
-                unsafe_allow_html=True,
-            )
-        with col_coh:
-            coh_key = str(dt.get("coherencia") or "").upper()
-            cd, cg, cl = COHERENCIA_BADGE.get(coh_key, ("#6b7280", "#f9fafb", coh_key or "—"))
-            st.markdown(
-                f'<div style="font-size:.8rem;color:#6b7280;margin-bottom:6px;">Coherencia</div>'
-                f'<span style="background:{cg};color:{cd};border:1.5px solid {cd};'
-                f'padding:6px 18px;border-radius:20px;font-weight:700;font-size:1.05rem;">'
-                f'{cl}</span>',
-                unsafe_allow_html=True,
-            )
-
-        st.markdown("<div style='margin-top:14px'></div>", unsafe_allow_html=True)
-
-        # Fila 3 — Líderes y rezagados
-        col_lid, col_rez = st.columns(2)
-        with col_lid:
-            st.markdown("**Top líderes sectoriales**")
-            st.write(dt.get("top_3_lideres") or "—")
-        with col_rez:
-            st.markdown("**Top rezagados**")
-            st.write(dt.get("top_3_rezagados") or "—")
-
-        st.markdown("<div style='margin-top:10px'></div>", unsafe_allow_html=True)
-
-        # Fila 4 — Nota explicativa
-        if dt.get("nota"):
-            st.info(dt["nota"])
-
-        # Fila 5 — Coherencia con macro
-        macro_dice  = str(dt.get("estado_macro") or "—")
-        sector_dice = str(dt.get("diagnostico_sector") or "—")
-        coh_key2    = str(dt.get("coherencia") or "").upper()
-        COHERENCIA_ICONO = {
-            "ALTA":       ("✅", "Alineados"),
-            "MEDIA":      ("⚠️", "Parcialmente alineados"),
-            "CONTRADICE": ("❌", "Contradicción — revisar señales"),
-        }
-        icono, coh_txt = COHERENCIA_ICONO.get(coh_key2, ("—", coh_key2))
+        dt      = diag_tec.iloc[0]
+        diag_k  = str(dt.get("diagnostico_sector") or "SEÑAL_MIXTA").upper()
+        emoji, titulo, bg, border, texto_color = DIAG_BANNER.get(
+            diag_k, ("🟡", diag_k, "#fefce8", "#ca8a04", "#713f12")
+        )
+        nota_txt = str(dt.get("nota") or "")
         st.markdown(
-            f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;'
-            f'padding:14px 18px;margin-top:4px;display:flex;align-items:center;gap:0;">'
-            f'<span style="color:#6b7280;font-size:.9rem;">Macro dice: </span>'
-            f'<b style="margin:0 6px;">{macro_dice}</b>'
-            f'<span style="color:#6b7280;font-size:1.4rem;margin:0 10px;">→</span>'
-            f'<span style="color:#6b7280;font-size:.9rem;">Sectores: </span>'
-            f'<b style="margin:0 6px;">{sector_dice}</b>'
-            f'<span style="margin-left:16px;font-size:.95rem;">{icono} {coh_txt}</span>'
-            f'</div>',
+            f'<div style="background:{bg};border:2px solid {border};'
+            f'border-radius:12px;padding:20px 28px;margin-bottom:16px;">'
+            f'<div style="font-size:1.6rem;font-weight:800;color:{texto_color};">'
+            f'{emoji} {titulo}</div>'
+            f'<div style="font-size:1rem;color:{texto_color};margin-top:6px;opacity:.85;">'
+            f'{nota_txt}</div></div>',
             unsafe_allow_html=True,
         )
+
+        # Métricas rápidas
+        m1, m2, m3, m4 = st.columns(4)
+        def _fmt(v, dec=1):
+            return f"{float(v):.{dec}f}" if v is not None and not pd.isna(v) else "—"
+        m1.metric("RSI Defensivos", _fmt(dt.get("score_defensivos")))
+        m2.metric("RSI Cíclicos",   _fmt(dt.get("score_ciclicos")))
+        m3.metric("RSI Mixtos",     _fmt(dt.get("score_mixtos")))
+        coh = str(dt.get("coherencia") or "—")
+        coh_emoji = {"ALTA": "✅", "MEDIA": "⚠️", "CONTRADICE": "❌"}.get(coh, "—")
+        m4.metric("Coherencia macro", f"{coh_emoji} {coh}")
     else:
         st.info("Sin datos en sector.sector_diagnostico_tecnico.")
 
     st.divider()
 
-    # ── Sección 2: Tarjetas agrupadas por estado ────────────────────────────
-    st.subheader("Industrias por estado")
+    # ── Sección 2: Los 11 sectores GICS ─────────────────────────────────────
+    st.subheader("Los 11 sectores del mercado")
 
-    ORDEN_ESTADOS = ["LEADING_STRONG", "LEADING_WEAK", "NEUTRAL", "LAGGING"]
-    LABEL_ESTADOS = {
-        "LEADING_STRONG": "Leading Strong",
-        "LEADING_WEAK":   "Leading Weak",
-        "NEUTRAL":        "Neutral",
-        "LAGGING":        "Lagging",
-    }
-    COLOR_ESTADOS = {
-        "LEADING_STRONG": "#057a55",
-        "LEADING_WEAK":   "#c27803",
-        "NEUTRAL":        "#6b7280",
-        "LAGGING":        "#e02424",
-    }
+    if not df_gics.empty:
+        for col_num in ["rsi_rs_semanal", "ret_3m", "ret_1m", "score_total"]:
+            if col_num in df_gics.columns:
+                df_gics[col_num] = pd.to_numeric(df_gics[col_num], errors="coerce")
 
-    if not ranking.empty:
-        grupos = {e: ranking[ranking["estado"] == e] for e in ORDEN_ESTADOS}
-        cols_estado = st.columns(4)
+        # Encabezado de tabla
+        h0, h1, h2, h3, h4, h5 = st.columns([3, 1.2, 2, 1.2, 1.5, 2])
+        for col, txt in [(h0, "Sector"), (h1, "ETF"), (h2, "Estado"),
+                          (h3, "RSI"), (h4, "Ret 3M"), (h5, "Alineación")]:
+            col.markdown(f"**{txt}**")
 
-        for col, estado in zip(cols_estado, ORDEN_ESTADOS):
-            df_grupo = grupos[estado]
-            color_e  = COLOR_ESTADOS[estado]
-            with col:
-                st.markdown(
-                    f'<div style="font-weight:700;color:{color_e};'
-                    f'font-size:1rem;margin-bottom:8px;border-bottom:2px solid {color_e};'
-                    f'padding-bottom:4px;">{LABEL_ESTADOS[estado]} ({len(df_grupo)})</div>',
-                    unsafe_allow_html=True,
-                )
-                for _, row in df_grupo.iterrows():
-                    # Badge alineacion_macro
-                    alin = str(row.get("alineacion_macro") or "")
-                    if alin == "ALIGNED":
-                        badge_color, badge_bg, badge_txt = "#057a55", "#f3faf7", "ALIGNED"
-                    else:
-                        badge_color, badge_bg, badge_txt = "#6b7280", "#f9fafb", "NEUTRAL"
+        st.markdown("<hr style='margin:4px 0 8px;border-color:#e5e7eb;'>", unsafe_allow_html=True)
 
-                    # ret_3m con color
-                    ret = row.get("ret_3m")
-                    if ret is not None and not pd.isna(ret):
-                        ret_v    = float(ret)
-                        ret_str  = f"{ret_v:+.2f}%"
-                        ret_col  = "#057a55" if ret_v >= 0 else "#e02424"
-                    else:
-                        ret_str, ret_col = "—", "#6b7280"
+        for _, row in df_gics.iterrows():
+            ticker  = str(row.get("ticker") or "")
+            estado  = str(row.get("estado") or "NEUTRAL").upper()
+            alin    = str(row.get("alineacion_macro") or "")
+            rsi     = row.get("rsi_rs_semanal")
+            ret3m   = row.get("ret_3m")
+            nombre  = SECTOR_NOMBRE.get(ticker, ticker)
 
-                    rsi = row.get("rsi_rs_semanal")
-                    rsi_str = f"{float(rsi):.1f}" if rsi is not None and not pd.isna(rsi) else "—"
+            icono_e, bg_e, color_e = ESTADO_SECTOR.get(estado, ("⬜", "#f9fafb", "#9ca3af"))
 
-                    score = row.get("score_total")
-                    score_v = float(score) / 100 if score is not None and not pd.isna(score) else 0.0
+            rsi_f   = f"{float(rsi):.1f}"   if rsi   is not None and not pd.isna(rsi)   else "—"
+            ret3m_v = float(ret3m) if ret3m is not None and not pd.isna(ret3m) else None
+            ret3m_f = f"{ret3m_v:+.1f}%" if ret3m_v is not None else "—"
+            ret_col = "#057a55" if ret3m_v is not None and ret3m_v >= 0 else "#e02424"
+            alin_txt = "✅ Alineado" if alin == "ALIGNED" else "⬜ Neutral"
 
-                    industria = str(row.get("industria") or row.get("ticker") or "")
-                    ticker    = str(row.get("ticker") or "")
-
-                    st.markdown(
-                        f'<div style="background:#f9fafb;border:1px solid #e5e7eb;'
-                        f'border-radius:6px;padding:10px 12px;margin-bottom:8px;">'
-                        f'<div style="font-size:1.1rem;font-weight:700;color:#111827;">{ticker}</div>'
-                        f'<div style="font-size:.75rem;color:#6b7280;margin-bottom:6px;'
-                        f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" '
-                        f'title="{industria}">{industria}</div>'
-                        f'<span style="background:{badge_bg};color:{badge_color};'
-                        f'border:1px solid {badge_color};padding:1px 8px;border-radius:12px;'
-                        f'font-size:.7rem;font-weight:600;">{badge_txt}</span>'
-                        f'<div style="margin-top:6px;display:flex;gap:12px;">'
-                        f'<span style="font-size:.82rem;">Ret 3m: <b style="color:{ret_col};">{ret_str}</b></span>'
-                        f'<span style="font-size:.82rem;">RSI: <b>{rsi_str}</b></span>'
-                        f'</div></div>',
-                        unsafe_allow_html=True,
-                    )
-                    st.progress(min(max(score_v, 0.0), 1.0),
-                                text=f"Score {float(score):.1f}" if score is not None and not pd.isna(score) else "Score —")
+            c0, c1, c2, c3, c4, c5 = st.columns([3, 1.2, 2, 1.2, 1.5, 2])
+            c0.markdown(f"**{nombre}**")
+            c1.markdown(f"`{ticker}`")
+            c2.markdown(
+                f'<span style="background:{bg_e};color:{color_e};border:1px solid {color_e};'
+                f'padding:2px 10px;border-radius:12px;font-size:.8rem;font-weight:600;">'
+                f'{icono_e} {estado.replace("_", " ").title()}</span>',
+                unsafe_allow_html=True,
+            )
+            c3.markdown(rsi_f)
+            c4.markdown(
+                f'<span style="color:{ret_col};font-weight:600;">{ret3m_f}</span>',
+                unsafe_allow_html=True,
+            )
+            c5.markdown(alin_txt)
     else:
         st.info("Sin datos en sector.v_sector_ranking.")
 
     st.divider()
 
-    # ── Sección 3: Nota AI ──────────────────────────────────────────────────
+    # ── Sección 3: Top 3 líderes y Bottom 3 rezagados ───────────────────────
+    if not df_all.empty:
+        for col_num in ["rsi_rs_semanal", "ret_3m", "score_total"]:
+            if col_num in df_all.columns:
+                df_all[col_num] = pd.to_numeric(df_all[col_num], errors="coerce")
+        df_sorted = df_all.dropna(subset=["score_total"]).sort_values("score_total", ascending=False)
+        top3    = df_sorted.head(3)
+        bottom3 = df_sorted.tail(3).iloc[::-1]
+
+        col_top, col_bot = st.columns(2)
+
+        def _card_etf(col, titulo, df_sub):
+            with col:
+                st.markdown(f"### {titulo}")
+                for _, row in df_sub.iterrows():
+                    tk  = str(row.get("ticker") or "")
+                    ind = str(row.get("industria") or "—")
+                    rsi = row.get("rsi_rs_semanal")
+                    r3m = row.get("ret_3m")
+                    rsi_f = f"{float(rsi):.1f}" if rsi is not None and not pd.isna(rsi) else "—"
+                    r3m_v = float(r3m) if r3m is not None and not pd.isna(r3m) else None
+                    r3m_f = f"{r3m_v:+.1f}%" if r3m_v is not None else "—"
+                    r3m_col = "#057a55" if r3m_v is not None and r3m_v >= 0 else "#e02424"
+                    with st.container(border=True):
+                        st.markdown(f"**{tk}** — {ind[:35]}")
+                        ca, cb = st.columns(2)
+                        ca.markdown(f"RSI: **{rsi_f}**")
+                        cb.markdown(
+                            f'Ret 3M: <span style="color:{r3m_col};font-weight:700;">{r3m_f}</span>',
+                            unsafe_allow_html=True,
+                        )
+
+        _card_etf(col_top, "🏆 Liderando esta semana", top3)
+        _card_etf(col_bot, "⚠️ Rezagados esta semana", bottom3)
+
+    st.divider()
+
+    # ── Sección 4: Nota AI ──────────────────────────────────────────────────
     st.subheader("Nota sectorial AI")
     if not nota.empty:
         n = nota.iloc[0]
         if n.get("resumen"):
-            st.markdown(f"**Resumen**\n\n{n['resumen']}")
-        tab1, tab2 = st.tabs(["Oportunidades", "Riesgos"])
-        with tab1:
+            st.markdown(f"{n['resumen']}")
+        tab_op, tab_ri = st.tabs(["Oportunidades", "Riesgos"])
+        with tab_op:
             st.write(n.get("oportunidades") or "—")
-        with tab2:
+        with tab_ri:
             st.write(n.get("riesgos") or "—")
     else:
         st.info("Sin notas sectoriales disponibles.")
 
     st.divider()
 
-    # ── Sección 4: Gráfico de burbujas ──────────────────────────────────────
-    st.subheader("Momentum relativo — Ret 3m vs RSI semanal")
-    if not ranking.empty:
-        df_plot = ranking.dropna(subset=["ret_3m", "rsi_rs_semanal"]).copy()
-        df_plot["ret_3m"]        = df_plot["ret_3m"].astype(float)
-        df_plot["rsi_rs_semanal"] = df_plot["rsi_rs_semanal"].astype(float)
-        df_plot["score_total"]   = df_plot["score_total"].fillna(50).astype(float)
-        df_plot["color_label"]   = df_plot["alineacion_macro"].apply(
-            lambda x: "Aligned" if str(x) == "ALIGNED" else "Neutral"
-        )
+    # ── Sección 5: Todos los ETFs temáticos ─────────────────────────────────
+    st.subheader("Todos los ETFs — 60 industrias")
 
-        fig = px.scatter(
-            df_plot,
-            x="ret_3m",
-            y="rsi_rs_semanal",
-            size="score_total",
-            color="color_label",
-            color_discrete_map={"Aligned": "#057a55", "Neutral": "#9ca3af"},
-            hover_name="ticker",
-            hover_data={"industria": True, "ret_3m": ":.2f",
-                        "rsi_rs_semanal": ":.1f", "color_label": False,
-                        "score_total": ":.1f"},
-            labels={
-                "ret_3m":         "Retorno 3m (%)",
-                "rsi_rs_semanal": "RSI fuerza relativa semanal",
-                "color_label":    "Alineación macro",
-            },
-            size_max=30,
-        )
-        fig.update_layout(
-            plot_bgcolor="#ffffff",
-            paper_bgcolor="#ffffff",
-            xaxis=dict(zeroline=True, zerolinecolor="#e5e7eb", gridcolor="#f3f4f6"),
-            yaxis=dict(zeroline=True, zerolinecolor="#e5e7eb", gridcolor="#f3f4f6"),
-            margin=dict(l=20, r=20, t=20, b=20),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    if not ranking.empty:
+        fc1, fc2, fc3 = st.columns(3)
+        with fc1:
+            opts_est  = ["Todos"] + sorted(ranking["estado"].dropna().unique().tolist())
+            f_estado  = st.selectbox("Estado", opts_est, key="sec_estado")
+        with fc2:
+            opts_alin = ["Todos"] + sorted(ranking["alineacion_macro"].dropna().unique().tolist())
+            f_alin    = st.selectbox("Alineación", opts_alin, key="sec_alin")
+        with fc3:
+            opts_sec  = ["Todos"] + sorted(ranking["sector_gics"].dropna().unique().tolist())
+            f_sec     = st.selectbox("Sector GICS", opts_sec, key="sec_gics")
+
+        dff = ranking.copy()
+        for col_num in ["score_total", "ret_3m", "rsi_rs_semanal"]:
+            if col_num in dff.columns:
+                dff[col_num] = pd.to_numeric(dff[col_num], errors="coerce")
+        if f_estado != "Todos": dff = dff[dff["estado"] == f_estado]
+        if f_alin   != "Todos": dff = dff[dff["alineacion_macro"] == f_alin]
+        if f_sec    != "Todos": dff = dff[dff["sector_gics"] == f_sec]
+
+        dff = dff.sort_values("score_total", ascending=False)
+        st.caption(f"{len(dff)} ETF(s) mostrado(s)")
+
+        for _, row in dff.iterrows():
+            alin      = str(row.get("alineacion_macro") or "")
+            estado    = str(row.get("estado") or "NEUTRAL").upper()
+            ticker    = str(row.get("ticker") or "")
+            score     = row.get("score_total")
+            ret       = row.get("ret_3m")
+            rsi       = row.get("rsi_rs_semanal")
+            industria = str(row.get("industria") or ticker)
+
+            icono_e, bg_e, color_e = ESTADO_SECTOR.get(estado, ("⬜", "#f9fafb", "#9ca3af"))
+            alin_txt = "✅ ALIGNED" if alin == "ALIGNED" else "⬜ NEUTRAL"
+            score_f  = f"{float(score):.1f}" if score is not None and not pd.isna(score) else "—"
+            score_n  = min(max(float(score) / 100 if score is not None and not pd.isna(score) else 0, 0), 1)
+            ret_v    = float(ret) if ret is not None and not pd.isna(ret) else None
+            ret_f    = f"{ret_v:+.2f}%" if ret_v is not None else "—"
+            ret_col  = "#057a55" if ret_v is not None and ret_v >= 0 else "#e02424"
+            rsi_f    = f"{float(rsi):.1f}" if rsi is not None and not pd.isna(rsi) else "—"
+
+            with st.container(border=True):
+                ea, eb, ec, ed = st.columns([2, 2, 1.5, 1.5])
+                ea.markdown(
+                    f'**{ticker}** — {industria[:35]}<br>'
+                    f'<span style="font-size:.75rem;color:#6b7280;">'
+                    f'{str(row.get("sector_gics") or "—")}</span>',
+                    unsafe_allow_html=True,
+                )
+                eb.markdown(
+                    f'<span style="background:{bg_e};color:{color_e};border:1px solid {color_e};'
+                    f'padding:2px 10px;border-radius:12px;font-size:.8rem;font-weight:600;">'
+                    f'{icono_e} {estado.replace("_"," ").title()}</span>',
+                    unsafe_allow_html=True,
+                )
+                ec.markdown(
+                    f'Ret 3M: <span style="color:{ret_col};font-weight:700;">{ret_f}</span><br>'
+                    f'RSI: **{rsi_f}**',
+                    unsafe_allow_html=True,
+                )
+                ed.markdown(alin_txt)
+                st.progress(score_n, text=f"Score {score_f}/100")
     else:
-        st.info("Sin datos para el gráfico.")
+        st.info("Sin datos en sector.v_sector_ranking.")
 
 
 # ── Página 3: MICRO ──────────────────────────────────────────────────────────
@@ -856,79 +844,328 @@ INSTRUMENTO_STYLE = {
     "cash_secured_put": ("#1d4ed8", "#eff6ff", "CSP"),
 }
 
-def pagina_estrategia():
-    st.title("Estrategia")
+CONTEXTO_LABEL = {
+    "structural_quality":  "Empresa de alta calidad",
+    "solid_but_expensive": "Sólida pero cara",
+    "improving":           "En proceso de mejora",
+    "structural_neutral":  "Neutral estructural",
+    "structural_risk":     "Riesgo estructural",
+}
 
-    df = query(SQL_TOP_SELECCION)
+BANNER_CONFIG = {
+    "SLOWDOWN": {
+        "emoji": "🟡", "titulo": "El mercado está frenando",
+        "bg": "#fefce8", "border": "#ca8a04", "texto_color": "#713f12",
+        "descripcion": (
+            "El sistema recomienda estrategias defensivas de ingreso. "
+            "Vendemos puts sobre empresas sólidas para cobrar prima "
+            "mientras esperamos mejor momento para comprar acciones."
+        ),
+    },
+    "EXPANSION": {
+        "emoji": "🟢", "titulo": "El mercado está creciendo",
+        "bg": "#f0fdf4", "border": "#16a34a", "texto_color": "#14532d",
+        "descripcion": (
+            "El sistema recomienda comprar acciones de empresas "
+            "de calidad con buen momentum técnico."
+        ),
+    },
+    "CONTRACTION": {
+        "emoji": "🔴", "titulo": "El mercado está contrayéndose",
+        "bg": "#fef2f2", "border": "#dc2626", "texto_color": "#7f1d1d",
+        "descripcion": (
+            "El sistema recomienda máxima cautela. "
+            "Solo estrategias muy defensivas."
+        ),
+    },
+    "RECOVERY": {
+        "emoji": "🔵", "titulo": "El mercado está recuperándose",
+        "bg": "#eff6ff", "border": "#2563eb", "texto_color": "#1e3a8a",
+        "descripcion": (
+            "El sistema empieza a identificar oportunidades "
+            "selectivas en empresas de calidad."
+        ),
+    },
+}
+
+
+def estrellas(score) -> str:
+    if score is None or (isinstance(score, float) and pd.isna(score)):
+        return "☆☆☆☆☆"
+    s = float(score)
+    if s >= 85: return "⭐⭐⭐⭐⭐"
+    if s >= 75: return "⭐⭐⭐⭐☆"
+    if s >= 60: return "⭐⭐⭐☆☆"
+    if s >= 40: return "⭐⭐☆☆☆"
+    if s >= 20: return "⭐☆☆☆☆"
+    return "☆☆☆☆☆"
+
+
+def estrellas_salud(altman_zona, piotroski_score) -> str:
+    az = str(altman_zona or "").lower()
+    ps = int(piotroski_score) if piotroski_score is not None and not (isinstance(piotroski_score, float) and pd.isna(piotroski_score)) else 0
+    if az == "safe" and ps >= 7:  return "⭐⭐⭐⭐⭐"
+    if az == "safe" and ps >= 5:  return "⭐⭐⭐⭐☆"
+    if az == "grey" and ps >= 7:  return "⭐⭐⭐☆☆"
+    if az == "grey":               return "⭐⭐☆☆☆"
+    return "⭐☆☆☆☆"
+
+
+def _render_vista_simple(df_cards: pd.DataFrame, macro_row):
+    """Sección 1: banner + métricas. Sección 2: cards en grilla de 3."""
+
+    estado_macro = str(macro_row.get("estado_macro") or "SLOWDOWN") if macro_row is not None else "SLOWDOWN"
+    cfg = BANNER_CONFIG.get(estado_macro, BANNER_CONFIG["SLOWDOWN"])
+
+    # ── Banner grande ────────────────────────────────────────────────────────
+    st.markdown(
+        f"""<div style="background:{cfg['bg']};border:2px solid {cfg['border']};
+        border-radius:12px;padding:20px 28px;margin-bottom:16px;">
+        <div style="font-size:1.6rem;font-weight:800;color:{cfg['texto_color']};">
+            {cfg['emoji']} {cfg['titulo']}
+        </div>
+        <div style="font-size:1rem;color:{cfg['texto_color']};margin-top:6px;opacity:.85;">
+            {cfg['descripcion']}
+        </div></div>""",
+        unsafe_allow_html=True,
+    )
+
+    # ── 3 métricas simples ───────────────────────────────────────────────────
+    n_universo = query("SELECT COUNT(*) AS n FROM seleccion.universo WHERE snapshot_date=(SELECT MAX(snapshot_date) FROM seleccion.universo)")
+    n_activas  = query("SELECT COUNT(*) AS n FROM agente.decision WHERE trade_status='active' AND snapshot_date=(SELECT MAX(snapshot_date) FROM agente.decision)")
+    instr_dom  = query("SELECT instrumento, COUNT(*) AS n FROM agente.decision WHERE trade_status='active' AND snapshot_date=(SELECT MAX(snapshot_date) FROM agente.decision) GROUP BY instrumento ORDER BY n DESC LIMIT 1")
+
+    n_univ  = int(n_universo.iloc[0]["n"]) if not n_universo.empty else 0
+    n_act   = int(n_activas.iloc[0]["n"])  if not n_activas.empty  else 0
+    dom_raw = str(instr_dom.iloc[0]["instrumento"]) if not instr_dom.empty else ""
+    dom_lbl = "Venta de puts" if dom_raw == "cash_secured_put" else ("Compra de acciones" if dom_raw == "stock" else dom_raw)
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Empresas analizadas", n_univ)
+    m2.metric("Oportunidades activas", n_act)
+    m3.metric("Estrategia dominante", dom_lbl)
+
+    st.divider()
+
+    if df_cards.empty:
+        st.info("Sin empresas en agente.top.")
+        return
+
+    # ── Cards en grilla de 3 ─────────────────────────────────────────────────
+    cols_grid = st.columns(3)
+
+    for i, (_, row) in enumerate(df_cards.iterrows()):
+        ticker    = str(row.get("ticker") or "")
+        sector_s  = str(row.get("sector") or "—")
+        industry  = str(row.get("industry") or "—")
+        cap       = str(row.get("market_cap_tier") or "—")
+        instrumen = str(row.get("instrumento") or "")
+        timing    = str(row.get("flag_timing") or "")
+        alin      = str(row.get("sector_alineado") or "")
+        score     = row.get("score_conviccion")
+        roic_s    = row.get("roic_signo")
+        deuda_s   = row.get("deuda_signo")
+
+        # Scores y salud para estrellas
+        qs        = row.get("quality_score")
+        vs        = row.get("value_score")
+        az_zona   = str(row.get("altman_zona") or "")
+        ps        = row.get("piotroski_score")
+
+        # Score de convicción
+        score_v    = float(score) if score is not None and not pd.isna(score) else 0
+        score_norm = min(max(score_v / 100, 0), 1)
+        score_f    = f"{score_v:.0f}/100"
+
+        # Checkmarks
+        ck_empresa = (roic_s is not None and not pd.isna(roic_s) and int(roic_s) == 1
+                      and deuda_s is not None and not pd.isna(deuda_s) and int(deuda_s) == -1)
+        ck_sector  = alin == "ALIGNED"
+        ck_timing  = timing in ("tecnico_confirmado", "pullback_comprable")
+
+        # Etiqueta instrumento
+        if instrumen == "cash_secured_put":
+            instr_label = "📋 Cash Secured Put"
+        elif instrumen == "bull_put_spread":
+            instr_label = "📋 Bull Put Spread"
+        elif instrumen == "stock":
+            instr_label = "📈 Stock"
+        else:
+            instr_label = f"📋 {instrumen.replace('_', ' ').title()}"
+
+        with cols_grid[i % 3]:
+            with st.container(border=True):
+                # ── Header ──────────────────────────────────────────────────
+                st.markdown(
+                    f'<div style="font-size:1.25rem;font-weight:800;line-height:1.2;">{ticker}</div>'
+                    f'<div style="color:#6b7280;font-size:.8rem;margin-bottom:2px;">'
+                    f'{sector_s} · {cap}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.caption(industry[:40])
+
+                # ── Estrategia ──────────────────────────────────────────────
+                st.markdown(f"**{instr_label}**")
+
+                # ── Estrellas ───────────────────────────────────────────────
+                st.markdown(
+                    f"Calidad:&nbsp;&nbsp; {estrellas(qs)}  \n"
+                    f"Valor:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {estrellas(vs)}  \n"
+                    f"Salud:&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; {estrellas_salud(az_zona, ps)}"
+                )
+
+                # ── Checkmarks ──────────────────────────────────────────────
+                st.markdown(
+                    ("✅" if ck_empresa else "⚠️") + " Mejorando estructuralmente  \n" +
+                    ("✅" if ck_sector  else "⚠️") + " Sector alineado  \n" +
+                    ("✅" if ck_timing  else "⚠️") + " Momento técnico favorable"
+                )
+
+                # ── Barra convicción ─────────────────────────────────────────
+                st.progress(score_norm, text=f"Convicción: {score_f}")
+
+                # ── Expander técnico ─────────────────────────────────────────
+                with st.expander("Ver análisis completo ▼"):
+                    ca, cb, cc = st.columns(3)
+
+                    # Col A — FUNDAMENTAL
+                    with ca:
+                        st.markdown("**Fundamental**")
+                        if qs is not None and not pd.isna(qs):
+                            st.markdown(f"Calidad: **{float(qs):.0f}/100**")
+                        if vs is not None and not pd.isna(vs):
+                            st.markdown(f"Valor: **{float(vs):.0f}/100**")
+                        ctx = str(row.get("contexto") or "")
+                        if ctx:
+                            st.markdown(f"*{CONTEXTO_LABEL.get(ctx, ctx)}*")
+                        roic_ok  = roic_s is not None and not pd.isna(roic_s) and int(roic_s) == 1
+                        deuda_ok = deuda_s is not None and not pd.isna(deuda_s) and int(deuda_s) == -1
+                        st.markdown(
+                            f'ROIC: <span style="color:{"#057a55" if roic_ok else "#e02424"};font-weight:600;">'
+                            f'{"↑ Mejorando" if roic_ok else "↓ Deteriorando"}</span><br>'
+                            f'Deuda: <span style="color:{"#057a55" if deuda_ok else "#e02424"};font-weight:600;">'
+                            f'{"↓ Bajando" if deuda_ok else "↑ Subiendo"}</span>',
+                            unsafe_allow_html=True,
+                        )
+
+                    # Col B — TÉCNICO
+                    with cb:
+                        st.markdown("**Técnico**")
+                        rsi = row.get("rsi_14_semanal")
+                        if rsi is not None and not pd.isna(rsi):
+                            rsi_v   = float(rsi)
+                            rsi_col = "#057a55" if 40 <= rsi_v <= 65 else ("#e02424" if rsi_v < 40 else "#c27803")
+                            st.markdown(
+                                f'RSI semanal: <span style="color:{rsi_col};font-weight:700;">{rsi_v:.1f}</span>',
+                                unsafe_allow_html=True,
+                            )
+                        ma = row.get("precio_vs_ma200")
+                        if ma is not None and not pd.isna(ma):
+                            ma_v   = float(ma)
+                            ma_col = "#057a55" if ma_v >= 0 else "#e02424"
+                            st.markdown(
+                                f'vs MA200: <span style="color:{ma_col};font-weight:700;">{ma_v:+.1f}%</span>',
+                                unsafe_allow_html=True,
+                            )
+                        vol = row.get("volume_ratio_20d")
+                        if vol is not None and not pd.isna(vol):
+                            st.markdown(f"Volumen: **{float(vol):.1f}x** la media")
+                        mom = row.get("momentum_3m")
+                        if mom is not None and not pd.isna(mom):
+                            st.markdown(f"Momentum 3M: **{float(mom):.1f}%**")
+
+                    # Col C — SALUD
+                    with cc:
+                        st.markdown("**Salud**")
+                        az = row.get("altman_z_score")
+                        if az is not None and not pd.isna(az):
+                            az_v = float(az)
+                            if az_v >= 2.99:
+                                st.markdown(f"🟢 Zona segura ({az_v:.1f})")
+                            elif az_v >= 1.81:
+                                st.markdown(f"🟡 Zona gris ({az_v:.1f})")
+                            else:
+                                st.markdown(f"🔴 Zona riesgo ({az_v:.1f})")
+                        if ps is not None and not pd.isna(ps):
+                            ps_v = int(ps)
+                            if ps_v >= 7:
+                                st.markdown(f"🟢 Piotroski fuerte ({ps_v}/9)")
+                            elif ps_v >= 5:
+                                st.markdown(f"🟡 Piotroski neutral ({ps_v}/9)")
+                            else:
+                                st.markdown(f"🔴 Piotroski débil ({ps_v}/9)")
+                        roic_ok  = roic_s is not None and not pd.isna(roic_s) and int(roic_s) == 1
+                        deuda_ok = deuda_s is not None and not pd.isna(deuda_s) and int(deuda_s) == -1
+                        st.markdown(
+                            f'ROIC: <span style="color:{"#057a55" if roic_ok else "#e02424"};font-weight:600;">'
+                            f'{"↑ Mejorando" if roic_ok else "↓ Deteriorando"}</span><br>'
+                            f'Deuda: <span style="color:{"#057a55" if deuda_ok else "#e02424"};font-weight:600;">'
+                            f'{"↓ Bajando" if deuda_ok else "↑ Subiendo"}</span>',
+                            unsafe_allow_html=True,
+                        )
+
+
+def _render_vista_tecnica(df: pd.DataFrame):
+    """Vista técnica original con filtros y expanders."""
 
     if df.empty:
         st.info("Sin datos en agente.decision.")
         return
 
-    # Conversiones de tipo para comparaciones seguras
     for col_num in ["quality_score", "value_score", "score_conviccion",
                     "altman_z_score", "rsi_14_semanal", "precio_vs_ma200", "volume_ratio_20d"]:
-        df[col_num] = pd.to_numeric(df[col_num], errors="coerce")
+        if col_num in df.columns:
+            df[col_num] = pd.to_numeric(df[col_num], errors="coerce")
     for col_int in ["piotroski_score", "rank_conviccion"]:
-        df[col_int] = pd.to_numeric(df[col_int], errors="coerce")
+        if col_int in df.columns:
+            df[col_int] = pd.to_numeric(df[col_int], errors="coerce")
 
-    # ── Sección 1: Métricas resumen ──────────────────────────────────────────
     n_stock   = int((df["instrumento"] == "stock").sum())
     n_csp     = int((df["instrumento"] == "cash_secured_put").sum())
     n_aligned = int((df["sector_alineado"] == "ALIGNED").sum())
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total seleccionadas",  len(df))
-    c2.metric("Stock",                n_stock)
-    c3.metric("Cash-secured put",     n_csp)
-    c4.metric("Sector alineado",      n_aligned)
+    c1.metric("Total seleccionadas", len(df))
+    c2.metric("Stock",               n_stock)
+    c3.metric("Cash-secured put",    n_csp)
+    c4.metric("Sector alineado",     n_aligned)
 
     st.divider()
 
-    # ── Sección 2: Filtros ───────────────────────────────────────────────────
     fc1, fc2, fc3 = st.columns(3)
     with fc1:
         opts_inst = ["Todos"] + sorted(df["instrumento"].dropna().unique().tolist())
-        f_inst = st.selectbox("Instrumento", opts_inst)
+        f_inst = st.selectbox("Instrumento", opts_inst, key="vt_inst")
     with fc2:
         opts_alin = ["Todos"] + sorted(df["sector_alineado"].dropna().unique().tolist())
-        f_alin = st.selectbox("Sector alineado", opts_alin)
+        f_alin = st.selectbox("Sector alineado", opts_alin, key="vt_alin")
     with fc3:
         opts_cap = ["Todos"] + sorted(df["market_cap_tier"].dropna().unique().tolist())
-        f_cap = st.selectbox("Market cap", opts_cap)
+        f_cap = st.selectbox("Market cap", opts_cap, key="vt_cap")
 
     dff = df.copy()
-    if f_inst != "Todos":
-        dff = dff[dff["instrumento"] == f_inst]
-    if f_alin != "Todos":
-        dff = dff[dff["sector_alineado"] == f_alin]
-    if f_cap != "Todos":
-        dff = dff[dff["market_cap_tier"] == f_cap]
+    if f_inst != "Todos": dff = dff[dff["instrumento"] == f_inst]
+    if f_alin != "Todos": dff = dff[dff["sector_alineado"] == f_alin]
+    if f_cap  != "Todos": dff = dff[dff["market_cap_tier"] == f_cap]
 
     st.caption(f"{len(dff)} empresa(s) mostrada(s)")
 
-    # ── Sección 3 + 4: Tabla con expanders ──────────────────────────────────
     for _, row in dff.iterrows():
-        inst      = str(row.get("instrumento") or "")
-        alin      = str(row.get("sector_alineado") or "")
-        timing    = str(row.get("flag_timing") or "")
-        ticker    = str(row.get("ticker") or "")
-        rank      = row.get("rank_conviccion")
-        score     = row.get("score_conviccion")
-        pos_size  = row.get("target_position_size")
-        sector_s  = str(row.get("sector") or "—")
+        inst     = str(row.get("instrumento") or "")
+        alin     = str(row.get("sector_alineado") or "")
+        timing   = str(row.get("flag_timing") or "")
+        ticker   = str(row.get("ticker") or "")
+        rank     = row.get("rank_conviccion")
+        score    = row.get("score_conviccion")
+        pos_size = row.get("target_position_size")
+        sector_s = str(row.get("sector") or "—")
 
-        # Colores de instrumento
         inst_color, inst_bg, inst_lbl = INSTRUMENTO_STYLE.get(inst, ("#6b7280", "#f9fafb", inst))
-        # Badge alineación
-        alin_txt = "✅ ALIGNED" if alin == "ALIGNED" else "⬜ NEUTRAL"
-        # Ícono timing
+        alin_txt     = "✅ ALIGNED" if alin == "ALIGNED" else "⬜ NEUTRAL"
         timing_icono = FLAG_TIMING_ICONO.get(timing, "⚪")
-        # Score formateado
-        score_f   = f"{float(score):.0f}" if score is not None and not pd.isna(score) else "—"
-        pos_f     = f"{float(pos_size):.2f}" if pos_size is not None and not pd.isna(pos_size) else "—"
-        rank_f    = f"#{int(rank)}" if rank is not None and not pd.isna(rank) else "—"
+        score_f      = f"{float(score):.0f}" if score is not None and not pd.isna(score) else "—"
+        pos_f        = f"{float(pos_size):.2f}" if pos_size is not None and not pd.isna(pos_size) else "—"
+        rank_f       = f"#{int(rank)}" if rank is not None and not pd.isna(rank) else "—"
 
-        # Título del expander: resumen de una línea
         titulo = (
             f"{rank_f}  {ticker}  ·  {sector_s[:28]}  ·  "
             f"{inst_lbl}  ·  {timing_icono} {timing.replace('_',' ')}  ·  "
@@ -936,11 +1173,8 @@ def pagina_estrategia():
         )
 
         with st.expander(titulo):
-            # Barra de score al tope del expander
             score_norm = min(max(float(score) / 100 if score is not None and not pd.isna(score) else 0, 0), 1)
             st.progress(score_norm, text=f"Score de convicción: {score_f}/100")
-
-            # Badges de instrumento y alineación
             st.markdown(
                 _badge(inst_lbl, inst_color, inst_bg) + "&nbsp;&nbsp;" +
                 _badge(alin_txt, "#057a55" if alin == "ALIGNED" else "#6b7280",
@@ -951,7 +1185,6 @@ def pagina_estrategia():
 
             col_a, col_b, col_c = st.columns(3)
 
-            # ── Columna A: FUNDAMENTAL ───────────────────────────────────────
             with col_a:
                 st.markdown("**FUNDAMENTAL**")
                 qs = row.get("quality_score")
@@ -960,70 +1193,70 @@ def pagina_estrategia():
                 st.metric("Value score",   f"{float(vs):.1f}" if vs is not None and not pd.isna(vs) else "—")
                 ctx = str(row.get("contexto") or "")
                 if ctx:
-                    st.markdown(
-                        _badge(ctx.replace("_", " ").title(), "#4b5563", "#f3f4f6"),
-                        unsafe_allow_html=True,
-                    )
+                    st.markdown(_badge(ctx.replace("_", " ").title(), "#4b5563", "#f3f4f6"), unsafe_allow_html=True)
 
-            # ── Columna B: TÉCNICO ───────────────────────────────────────────
             with col_b:
                 st.markdown("**TÉCNICO**")
                 rsi = row.get("rsi_14_semanal")
                 if rsi is not None and not pd.isna(rsi):
                     rsi_v = float(rsi)
                     rsi_color = "#057a55" if 40 <= rsi_v <= 65 else ("#e02424" if rsi_v < 40 else "#c27803")
-                    st.markdown(
-                        f'RSI semanal: <span style="color:{rsi_color};font-weight:700;">{rsi_v:.1f}</span>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown("RSI semanal: —")
-
+                    st.markdown(f'RSI semanal: <span style="color:{rsi_color};font-weight:700;">{rsi_v:.1f}</span>', unsafe_allow_html=True)
                 ma = row.get("precio_vs_ma200")
                 if ma is not None and not pd.isna(ma):
-                    ma_v     = float(ma)
+                    ma_v = float(ma)
                     ma_color = "#057a55" if ma_v >= 0 else "#e02424"
-                    st.markdown(
-                        f'vs MA200: <span style="color:{ma_color};font-weight:700;">{ma_v:+.2f}%</span>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown("vs MA200: —")
-
+                    st.markdown(f'vs MA200: <span style="color:{ma_color};font-weight:700;">{ma_v:+.2f}%</span>', unsafe_allow_html=True)
                 vol = row.get("volume_ratio_20d")
                 vol_f = f"{float(vol):.2f}x" if vol is not None and not pd.isna(vol) else "—"
                 st.markdown(f"Vol ratio 20d: **{vol_f}**")
 
-            # ── Columna C: SALUD ─────────────────────────────────────────────
             with col_c:
                 st.markdown("**SALUD**")
-
                 az = row.get("altman_z_score")
                 if az is not None and not pd.isna(az):
-                    az_v     = float(az)
+                    az_v = float(az)
                     az_color = "#057a55" if az_v > 2.99 else ("#c27803" if az_v >= 1.81 else "#e02424")
-                    st.markdown(
-                        f'Altman Z: <span style="color:{az_color};font-weight:700;">{az_v:.2f}</span>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown("Altman Z: —")
-
+                    st.markdown(f'Altman Z: <span style="color:{az_color};font-weight:700;">{az_v:.2f}</span>', unsafe_allow_html=True)
                 ps = row.get("piotroski_score")
                 if ps is not None and not pd.isna(ps):
-                    ps_v     = int(ps)
+                    ps_v = int(ps)
                     ps_color = "#057a55" if ps_v >= 7 else ("#c27803" if ps_v >= 5 else "#e02424")
-                    st.markdown(
-                        f'Piotroski F: <span style="color:{ps_color};font-weight:700;">{ps_v}</span>',
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown("Piotroski F: —")
+                    st.markdown(f'Piotroski F: <span style="color:{ps_color};font-weight:700;">{ps_v}</span>', unsafe_allow_html=True)
 
-            # Info de sector/industria/cap
-            ind   = str(row.get("industry") or "—")
-            cap   = str(row.get("market_cap_tier") or "—")
+            ind = str(row.get("industry") or "—")
+            cap = str(row.get("market_cap_tier") or "—")
             st.caption(f"{sector_s} · {ind} · {cap}")
+
+
+def pagina_estrategia():
+    st.title("Estrategia")
+
+    # Leer datos macro para el banner
+    df_macro = query(SQL_MACRO_ESTADO)
+    macro_row = df_macro.iloc[0].to_dict() if not df_macro.empty else None
+
+    # Leer cards (agente.top + enriquecimiento)
+    df_cards = query(SQL_ESTRATEGIA_CARDS)
+    for col_num in ["quality_score", "value_score", "score_conviccion", "altman_z_score",
+                    "rsi_14_semanal", "precio_vs_ma200", "volume_ratio_20d", "momentum_3m"]:
+        if col_num in df_cards.columns:
+            df_cards[col_num] = pd.to_numeric(df_cards[col_num], errors="coerce")
+    for col_int in ["piotroski_score", "rank_conviccion", "roic_signo", "deuda_signo"]:
+        if col_int in df_cards.columns:
+            df_cards[col_int] = pd.to_numeric(df_cards[col_int], errors="coerce")
+
+    # Leer datos para vista técnica
+    df_tecnica = query(SQL_TOP_SELECCION)
+
+    # Tabs
+    tab_simple, tab_tecnica = st.tabs(["Vista simple", "Vista técnica"])
+
+    with tab_simple:
+        _render_vista_simple(df_cards, macro_row)
+
+    with tab_tecnica:
+        _render_vista_tecnica(df_tecnica)
 
 
 # ── Página 5: ESTRATEGIA OPCIONES ────────────────────────────────────────────
@@ -1306,22 +1539,35 @@ def pagina_opciones():
 def pagina_como_funciona():
 
     # ── Sección 1: Hero ──────────────────────────────────────────────────────
+    st.title("Ciencia de Datos aplicada a la Bolsa de Valores")
+    st.subheader("Análisis cuantitativo sistemático del mercado estadounidense")
     st.markdown(
-        '<h1 style="font-size:2.4rem;font-weight:800;margin-bottom:4px;">'
-        'Sistema de Inversión Cuantitativo</h1>',
-        unsafe_allow_html=True,
+        """
+El mercado genera ruido constante. Aplicamos modelos matemáticos, regresiones lineales
+y análisis técnico masivo sobre más de 3.000 empresas para separar la señal del ruido.
+
+El resultado: reportes semanales con estrategias accionables — acciones directas y opciones
+con prima positiva — fundamentadas en datos, no en intuición.
+"""
     )
-    st.markdown(
-        '<p style="font-size:1.15rem;color:#6b7280;margin-top:0;">Análisis sistemático del mercado en 5 capas</p>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        "El mercado genera señales contradictorias a diario. Este sistema elimina el ruido "
-        "aplicando un proceso jerárquico y reproducible: primero entiende el ciclo económico, "
-        "luego identifica los sectores favorecidos, después selecciona las empresas de mayor "
-        "calidad dentro de esos sectores, y finalmente construye señales accionables con el "
-        "instrumento adecuado para cada momento — acciones directas u opciones con prima positiva."
-    )
+
+    # ── Propuestas de valor ──────────────────────────────────────────────────
+    pv1, pv2, pv3 = st.columns(3)
+    with pv1:
+        with st.container(border=True):
+            st.markdown("### 📊")
+            st.markdown("**Análisis semanal actualizado**")
+            st.markdown("Cada lunes el sistema procesa el mercado completo y genera señales frescas")
+    with pv2:
+        with st.container(border=True):
+            st.markdown("### 🎯")
+            st.markdown("**Estrategias accionables**")
+            st.markdown("No solo análisis — señales concretas con el instrumento y el momento exacto")
+    with pv3:
+        with st.container(border=True):
+            st.markdown("### 🤖")
+            st.markdown("**Asistente con contexto real**")
+            st.markdown("Preguntá en lenguaje natural y recibí respuestas basadas en datos reales del sistema")
 
     st.divider()
 
