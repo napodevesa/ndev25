@@ -10,6 +10,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def get_secret(key, default=None):
+    try:
+        return st.secrets[key]
+    except:
+        return os.getenv(key, default)
+
+
 st.set_page_config(
     page_title="Sistema de Inversión",
     page_icon="📊",
@@ -20,11 +28,11 @@ st.set_page_config(
 
 def get_conn():
     return psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        port=int(os.getenv("POSTGRES_PORT", 5433)),
-        dbname=os.getenv("POSTGRES_DB", "ndev25"),
-        user=os.getenv("POSTGRES_USER", "ndev"),
-        password=os.getenv("POSTGRES_PASSWORD", "ndev"),
+        host=get_secret("POSTGRES_HOST", "localhost"),
+        port=int(get_secret("POSTGRES_PORT", 5433)),
+        dbname=get_secret("POSTGRES_DB", "ndev25"),
+        user=get_secret("POSTGRES_USER", "ndev"),
+        password=get_secret("POSTGRES_PASSWORD", "ndev"),
     )
 
 @st.cache_data(ttl=300)
@@ -271,7 +279,7 @@ SEMAFORO_BG = {
 def tarjeta_indicador(label: str, valor: str, estado: str,
                       nota: str = "", fecha: str = "") -> str:
     """Devuelve HTML de una tarjeta con color según estado del semáforo."""
-    key = estado.lower() if estado else ""
+    key = (estado or "").lower()
     border, bg = SEMAFORO_BG.get(key, ("#6b7280", "#f9fafb"))
     nota_html  = f'<div style="font-size:.75rem;color:#6b7280;margin-top:5px;">{nota}</div>' if nota else ""
     fecha_html = f'<div style="font-size:.7rem;color:#9ca3af;margin-top:3px;">{fecha}</div>' if fecha else ""
@@ -2161,7 +2169,7 @@ def llamar_claude_chat(
     historial: list[dict],
 ) -> str:
     """Llama a Claude con historial completo y contexto del sistema."""
-    cliente = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    cliente = anthropic.Anthropic(api_key=get_secret("ANTHROPIC_API_KEY"))
 
     # Construir mensajes: historial previo + pregunta actual con contexto
     messages = []
