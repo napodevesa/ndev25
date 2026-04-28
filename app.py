@@ -1975,7 +1975,8 @@ TOP 5 EMPRESAS POR CONVICCIÓN:
 
 def get_empresa_data(conn, ticker: str):
     ticker = ticker.upper().strip()
-    sql = """
+
+    sql_enriquecimiento = """
         SELECT
             e.ticker, e.sector, e.industry, e.market_cap_tier,
             e.quality_score, e.value_score,
@@ -2005,10 +2006,49 @@ def get_empresa_data(conn, ticker: str):
           AND e.snapshot_date = (SELECT MAX(snapshot_date)
                                   FROM seleccion.enriquecimiento)
     """
+
+    sql_fundamentales = """
+        SELECT
+            r.operating_profit_margin,
+            r.free_cash_flow_operating_cash_flow_ratio,
+            r.interest_coverage_ratio,
+            r.debt_to_equity_ratio,
+            r.price_to_earnings_ratio,
+            r.price_to_book_ratio,
+            r.price_to_free_cash_flow_ratio,
+            r.free_cash_flow_per_share,
+            k.roic,
+            k.roe,
+            k.roa,
+            k.income_quality,
+            k.ev_to_ebitda,
+            k.net_debt_to_ebitda,
+            k.fcf_yield,
+            k.market_cap
+        FROM ingest.ratios_ttm r
+        JOIN ingest.keymetrics k
+            ON k.ticker = r.ticker
+            AND k.fecha_consulta = (SELECT MAX(fecha_consulta)
+                                    FROM ingest.keymetrics)
+        WHERE r.ticker = %s
+          AND r.fecha_consulta = (SELECT MAX(fecha_consulta)
+                                  FROM ingest.ratios_ttm)
+    """
+
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(sql, (ticker,))
-        row = cur.fetchone()
-    return dict(row) if row else None
+        cur.execute(sql_enriquecimiento, (ticker,))
+        row_enriq = cur.fetchone()
+        cur.execute(sql_fundamentales, (ticker,))
+        row_fund = cur.fetchone()
+
+    # Empresa fuera del universo filtrado — usar solo fundamentales
+    if not row_enriq and not row_fund:
+        return None
+
+    result = dict(row_enriq) if row_enriq else {"ticker": ticker}
+    if row_fund:
+        result.update(dict(row_fund))
+    return result
 
 
 def get_etf_data(conn, ticker: str):
@@ -2061,19 +2101,31 @@ def enriquecer_contexto_con_ticker(conn, pregunta: str, contexto_base: str) -> s
         if data:
             ma200 = data.get("precio_vs_ma200")
             ma200_f = f"{float(ma200):.1f}%" if ma200 is not None else "N/A"
+            en_universo = data.get("quality_score") is not None
             contexto_extra += f"""
-DATOS DEL SISTEMA PARA {ticker}:
-  Sector: {data.get('sector')} | {data.get('industry')}
-  Quality: {data.get('quality_score')} | Value: {data.get('value_score')}
-  Score convicción: {data.get('score_conviccion', 'N/A')}
-  Instrumento: {data.get('instrumento', 'N/A')}
-  RSI semanal: {data.get('rsi_14_semanal')} | MA200: {ma200_f}
-  Altman: {data.get('altman_z_score')} ({data.get('altman_zona')})
-  Piotroski: {data.get('piotroski_score')}
-  ROIC: {'↑ mejorando' if data.get('roic_signo') == 1 else '↓ deteriorando'}
-  Deuda: {'↓ bajando' if data.get('deuda_signo') == -1 else '↑ subiendo'}
-  Tendencia: {data.get('tendencia_fundamental', 'N/A')}
-  Opciones: {data.get('estrategia', 'N/A')} | Strike: {data.get('put_strike', 'N/A')}
+DATOS DEL SISTEMA PARA {ticker}{' (fuera del universo filtrado — solo fundamentales TTM)' if not en_universo else ''}:
+  Sector: {data.get('sector', 'N/D')} | {data.get('industry', 'N/D')}
+  Quality: {data.get('quality_score', 'N/D')} | Value: {data.get('value_score', 'N/D')}
+  Score convicción: {data.get('score_conviccion', 'N/D')}
+  Instrumento: {data.get('instrumento', 'N/D')}
+  RSI semanal: {data.get('rsi_14_semanal', 'N/D')} | MA200: {ma200_f}
+  Altman: {data.get('altman_z_score', 'N/D')} ({data.get('altman_zona', 'N/D')})
+  Piotroski: {data.get('piotroski_score', 'N/D')}
+  ROIC: {'↑ mejorando' if data.get('roic_signo') == 1 else '↓ deteriorando' if data.get('roic_signo') is not None else 'N/D'}
+  Deuda: {'↓ bajando' if data.get('deuda_signo') == -1 else '↑ subiendo' if data.get('deuda_signo') is not None else 'N/D'}
+  Tendencia: {data.get('tendencia_fundamental', 'N/D')}
+  Opciones: {data.get('estrategia', 'N/D')} | Strike: {data.get('put_strike', 'N/D')}
+  MÉTRICAS FUNDAMENTALES TTM:
+  ROIC: {data.get('roic', 'N/D')}
+  ROE: {data.get('roe', 'N/D')}
+  Margen operativo: {data.get('operating_profit_margin', 'N/D')}
+  P/E: {data.get('price_to_earnings_ratio', 'N/D')}
+  P/FCF: {data.get('price_to_free_cash_flow_ratio', 'N/D')}
+  EV/EBITDA: {data.get('ev_to_ebitda', 'N/D')}
+  Net Debt/EBITDA: {data.get('net_debt_to_ebitda', 'N/D')}
+  FCF/share: {data.get('free_cash_flow_per_share', 'N/D')}
+  Income quality: {data.get('income_quality', 'N/D')}
+  Market cap: {data.get('market_cap', 'N/D')}
 """
             opciones = get_opciones_data(conn, ticker)
             if opciones:
@@ -2131,43 +2183,44 @@ def llamar_claude_chat(
 
 
 MENSAJE_BIENVENIDA = """
-👋 Hola, soy el asistente del sistema de inversión cuantitativo.
+👋 Hola. Soy el asistente del sistema de inversión cuantitativo.
 
-Tengo acceso a todos los datos del sistema en tiempo real.
-Puedo ayudarte con:
+Analizamos más de 3.000 empresas y 75 ETFs cada semana usando modelos matemáticos, regresiones lineales y análisis técnico masivo.
 
-📊 **Estado del sistema**
-- "¿Cuál es el estado del mercado hoy?"
-- "¿Cuántas señales activas hay esta semana?"
-- "¿Qué sectores lideran ahora?"
+Podés preguntarme, por ejemplo, sobre:
 
-🏢 **Empresas específicas**
-- "¿Cómo está MO en el sistema?"
-- "Explicame por qué el sistema recomienda PTCT"
-- "¿Cuál es el moat de HALO?"
-- "¿Qué score tiene MSFT?"
+🌍 **Contexto macroeconómico**
+- "¿En qué fase del ciclo estamos?"
+- "¿Cómo está la inflación y qué implica para el mercado?"
+- "¿Qué dice el desempleo sobre la economía?"
 
-📈 **ETFs y commodities**
-- "¿Qué ETFs están buenos ahora?"
-- "¿Cómo está el oro en este contexto macro?"
-- "¿Qué commodities favorece el sistema?"
+🏢 **Empresas y métricas financieras**
+- "¿Cuál es el ROIC de TSLA?"
+- "¿Cómo está AMD en el sistema?"
+- "¿Qué oportunidades hay para invertir a largo plazo?"
+- "Explicame el moat de AAPL"
 
-🎯 **Opciones y estrategias**
+📈 **ETFs, sectores y commodities**
+- "¿Qué ETFs favorece el sistema esta semana?"
+- "¿Cómo está el oro en este contexto?"
+- "¿Qué sectores lideran y cuáles evitar?"
+
+🎯 **Estrategias de inversión**
+- "¿Qué oportunidades concretas hay esta semana?"
 - "Explicame cómo funciona un cash secured put"
-- "¿Qué significa delta -0.34?"
-- "¿Cuándo conviene un bull put spread vs CSP?"
-- "Explicame el contrato de opciones de MO"
+- "¿Cuándo conviene bull put spread vs CSP?"
+- "¿Qué significa delta -0.34 en una opción?"
 
-⚠️ *Este asistente no constituye asesoramiento financiero. Verificá siempre antes de operar.*
+---
+⚠️ *Este asistente no constituye asesoramiento financiero. Verificá siempre con un profesional antes de operar.*
 """
 
 
 def pagina_asistente():
     st.title("💬 Asistente de Inversiones")
     st.markdown("""
-### Tu analista de inversiones personal
-Preguntame sobre el estado del mercado, empresas específicas, ETFs o estrategias
-de opciones. Tengo acceso a todos los datos del sistema en tiempo real.
+### 📊 Tu analista de inversiones cuantitativo
+Análisis basado en datos de más de **3.000 empresas USA** y **75 ETFs** — actualizado cada semana.
 """)
 
     if "ANTHROPIC_API_KEY" not in os.environ or not os.environ["ANTHROPIC_API_KEY"]:
