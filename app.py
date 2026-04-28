@@ -2255,6 +2255,10 @@ Análisis basado en datos de más de **3.000 empresas USA** y **75 ETFs** — ac
         contexto_base = leer_contexto_sistema()
 
         with st.chat_message("assistant"):
+            # DEBUG TEMPORAL — borrar después
+            api_key = get_secret("ANTHROPIC_API_KEY")
+            st.warning(f"Key empieza con: {api_key[:15] if api_key else 'NO ENCONTRADA'}")
+
             with st.spinner("Analizando el sistema..."):
                 try:
                     conn = get_conn()
