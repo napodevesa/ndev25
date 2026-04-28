@@ -2185,7 +2185,7 @@ def llamar_claude_chat(
 MENSAJE_BIENVENIDA = """
 👋 Hola. Soy el asistente del sistema de inversión cuantitativo.
 
-Analizamos más de 3.000 empresas y 75 ETFs cada semana usando modelos matemáticos, regresiones lineales y análisis técnico masivo.
+Analizamos más de 3.000 empresas y 75 ETFs cada semana usando modelos matemáticos, multifactores, regresiones lineales y análisis fundamental y técnico masivo.
 
 Podés preguntarme, por ejemplo, sobre:
 
