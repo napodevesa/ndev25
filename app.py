@@ -279,7 +279,7 @@ SEMAFORO_BG = {
 def tarjeta_indicador(label: str, valor: str, estado: str,
                       nota: str = "", fecha: str = "") -> str:
     """Devuelve HTML de una tarjeta con color según estado del semáforo."""
-    key = (estado or "").lower()
+    key = str(estado).lower() if estado is not None else ""
     border, bg = SEMAFORO_BG.get(key, ("#6b7280", "#f9fafb"))
     nota_html  = f'<div style="font-size:.75rem;color:#6b7280;margin-top:5px;">{nota}</div>' if nota else ""
     fecha_html = f'<div style="font-size:.7rem;color:#9ca3af;margin-top:3px;">{fecha}</div>' if fecha else ""
