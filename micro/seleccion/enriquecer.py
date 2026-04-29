@@ -107,6 +107,14 @@ SQL_HIST = """
     ORDER BY fecha_reporte ASC
 """
 
+SQL_DIVIDEND_YIELD = """
+    SELECT r.dividend_yield
+    FROM ingest.ratios_ttm r
+    WHERE r.ticker = %s
+    ORDER BY r.fecha_consulta DESC
+    LIMIT 1
+"""
+
 SQL_MACRO = """
     SELECT estado_macro
     FROM macro.macro_diagnostico
@@ -140,6 +148,7 @@ INSERT_SQL = """
         deuda_tendencia, deuda_signo, deuda_r2, deuda_confiable,
 
         estado_macro, sector_etf, sector_alineado,
+        dividend_yield,
         run_id
     )
     VALUES (
@@ -161,6 +170,7 @@ INSERT_SQL = """
         %(deuda_tendencia)s, %(deuda_signo)s, %(deuda_r2)s, %(deuda_confiable)s,
 
         %(estado_macro)s, %(sector_etf)s, %(sector_alineado)s,
+        %(dividend_yield)s,
         %(run_id)s
     )
     ON CONFLICT (ticker, snapshot_date) DO UPDATE SET
@@ -198,6 +208,7 @@ INSERT_SQL = """
         estado_macro        = EXCLUDED.estado_macro,
         sector_etf          = EXCLUDED.sector_etf,
         sector_alineado     = EXCLUDED.sector_alineado,
+        dividend_yield      = EXCLUDED.dividend_yield,
         actualizado_en      = NOW(),
         run_id              = EXCLUDED.run_id
 """
@@ -354,6 +365,14 @@ def leer_salud(conn, ticker: str) -> dict:
     return dict(row)
 
 
+# ── DIVIDEND YIELD ────────────────────────────────────────────────────────────
+def leer_dividend_yield(conn, ticker: str) -> float | None:
+    with conn.cursor() as cur:
+        cur.execute(SQL_DIVIDEND_YIELD, (ticker,))
+        row = cur.fetchone()
+    return float(row[0]) if row and row[0] is not None else None
+
+
 # ── REGRESIONES ───────────────────────────────────────────────────────────────
 def calcular_regresion(valores: list) -> tuple:
     """
@@ -504,6 +523,9 @@ def main():
             # ── Regresiones
             regresiones = calcular_regresiones(conn, ticker)
 
+            # ── Dividend yield
+            dividend_yield = leer_dividend_yield(conn, ticker)
+
             # ── Sector y alineación macro
             sector_etf    = SECTOR_ETF.get(empresa["sector"] or "", None)
             sector_alin   = alineaciones.get(sector_etf, "NEUTRAL") if sector_etf else "NEUTRAL"
@@ -526,6 +548,7 @@ def main():
                 "estado_macro":         estado_macro,
                 "sector_etf":           sector_etf,
                 "sector_alineado":      sector_alin,
+                "dividend_yield":       dividend_yield,
                 "run_id":               RUN_ID,
             }
 
