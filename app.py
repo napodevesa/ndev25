@@ -202,21 +202,55 @@ ORDER BY s.score DESC
 """
 
 SQL_MICRO = """
-SELECT ticker, sector, industry, market_cap_tier,
-       quality_score, value_score, multifactor_score,
-       multifactor_rank, multifactor_percentile,
-       rsi_14_semanal, precio_vs_ma200,
-       volume_ratio_20d, obv_slope,
-       momentum_3m, momentum_6m, momentum_12m,
-       altman_z_score, altman_zona,
-       piotroski_score, piotroski_categoria,
-       roic_tendencia, roic_signo, roic_r2, roic_confiable,
-       deuda_tendencia, deuda_signo, deuda_r2, deuda_confiable,
-       estado_macro, sector_etf, sector_alineado
-FROM seleccion.enriquecimiento
-WHERE snapshot_date = (SELECT MAX(snapshot_date)
-                       FROM seleccion.enriquecimiento)
-ORDER BY multifactor_rank
+SELECT
+    e.ticker, e.sector, e.industry,
+    e.market_cap_tier,
+    e.quality_score, e.value_score,
+    e.multifactor_score, e.multifactor_rank,
+    e.multifactor_percentile,
+
+    e.rsi_14_semanal, e.precio_vs_ma200,
+    e.volume_ratio_20d, e.momentum_3m,
+    e.momentum_6m, e.momentum_12m,
+    e.dist_max_52w,
+
+    e.altman_z_score, e.altman_zona,
+    e.piotroski_score, e.piotroski_categoria,
+    e.roic_signo, e.roic_confiable,
+    e.deuda_signo, e.deuda_confiable,
+    e.sector_alineado,
+
+    e.dividend_yield,
+
+    r.operating_profit_margin,
+    r.net_profit_margin,
+    r.free_cash_flow_per_share,
+    r.debt_to_equity_ratio,
+    r.interest_coverage_ratio,
+    r.current_ratio,
+    r.price_to_earnings_ratio,
+    r.price_to_book_ratio,
+    r.price_to_free_cash_flow_ratio,
+    r.enterprise_value_multiple,
+    r.dividend_yield AS dividend_yield_ttm,
+
+    k.roic, k.roe, k.roa,
+    k.net_debt_to_ebitda,
+    k.ev_to_ebitda,
+    k.income_quality,
+    k.fcf_yield,
+    k.market_cap
+
+FROM seleccion.enriquecimiento e
+LEFT JOIN ingest.ratios_ttm r
+    ON r.ticker = e.ticker
+    AND r.fecha_consulta = (SELECT MAX(fecha_consulta) FROM ingest.ratios_ttm)
+LEFT JOIN ingest.keymetrics k
+    ON k.ticker = e.ticker
+    AND k.fecha_consulta = (SELECT MAX(fecha_consulta) FROM ingest.keymetrics)
+WHERE e.snapshot_date = (SELECT MAX(snapshot_date)
+                          FROM seleccion.enriquecimiento)
+ORDER BY e.multifactor_rank
 """
 
 SQL_DIRECCION = """
@@ -1005,7 +1039,7 @@ SIGNO_LABEL = {1: "↑", 0: "→", -1: "↓"}
 
 
 def pagina_micro():
-    st.title("Micro — Universo de trabajo")
+    st.title("Empresas")
 
     df = query(SQL_MICRO)
 
@@ -1014,21 +1048,35 @@ def pagina_micro():
         return
 
     # Conversiones numéricas
-    for col in ["quality_score", "value_score", "multifactor_score", "multifactor_rank",
-                "multifactor_percentile", "rsi_14_semanal", "precio_vs_ma200",
-                "volume_ratio_20d", "momentum_3m", "momentum_6m", "momentum_12m",
-                "altman_z_score", "piotroski_score", "roic_signo", "deuda_signo"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+    NUM_COLS = [
+        "quality_score", "value_score", "multifactor_score", "multifactor_rank",
+        "multifactor_percentile", "rsi_14_semanal", "precio_vs_ma200",
+        "volume_ratio_20d", "momentum_3m", "momentum_6m", "momentum_12m",
+        "dist_max_52w", "altman_z_score", "piotroski_score",
+        "roic_signo", "deuda_signo", "dividend_yield",
+        "operating_profit_margin", "net_profit_margin", "free_cash_flow_per_share",
+        "debt_to_equity_ratio", "interest_coverage_ratio", "current_ratio",
+        "price_to_earnings_ratio", "price_to_book_ratio", "price_to_free_cash_flow_ratio",
+        "enterprise_value_multiple", "dividend_yield_ttm",
+        "roic", "roe", "roa", "net_debt_to_ebitda", "ev_to_ebitda",
+        "income_quality", "fcf_yield", "market_cap",
+    ]
+    for col in NUM_COLS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     # ── Métricas resumen ─────────────────────────────────────────────────────
-    n_aligned       = int((df["sector_alineado"] == "ALIGNED").sum())
-    n_roic_mejora   = int((df["roic_signo"] == 1).sum())
-    n_deuda_baja    = int((df["deuda_signo"] == -1).sum())
+    n_total       = len(df)
+    n_con_div     = int((df["dividend_yield"] > 0).sum())
+    pct_div       = round(n_con_div / n_total * 100) if n_total else 0
+    n_aligned     = int((df["sector_alineado"] == "ALIGNED").sum())
+    n_roic_mejora = int((df["roic_signo"] == 1).sum())
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Empresas en universo", len(df))
-    c2.metric("Sector ALIGNED",       n_aligned)
-    c3.metric("ROIC mejorando",        n_roic_mejora)
-    c4.metric("Deuda bajando",         n_deuda_baja)
+    c1.metric("Empresas", n_total)
+    c2.metric("Con dividendo", f"{n_con_div} ({pct_div}%)")
+    c3.metric("ROIC mejorando", n_roic_mejora)
+    c4.metric("Sector ALIGNED", n_aligned)
 
     st.divider()
 
@@ -1036,35 +1084,71 @@ def pagina_micro():
     ff1, ff2, ff3, ff4, ff5 = st.columns(5)
     with ff1:
         opts_sec = ["Todos"] + sorted(df["sector"].dropna().unique().tolist())
-        f_sec = st.selectbox("Sector", opts_sec)
+        f_sec = st.selectbox("Sector", opts_sec, key="emp_sec")
     with ff2:
         opts_cap = ["Todos"] + sorted(df["market_cap_tier"].dropna().unique().tolist())
-        f_cap = st.selectbox("Market cap", opts_cap)
+        f_cap = st.selectbox("Market cap", opts_cap, key="emp_cap")
     with ff3:
         opts_az = ["Todos"] + sorted(df["altman_zona"].dropna().unique().tolist())
-        f_az = st.selectbox("Altman zona", opts_az)
+        f_az = st.selectbox("Altman zona", opts_az, key="emp_az")
     with ff4:
         opts_pio = ["Todos"] + sorted(df["piotroski_categoria"].dropna().unique().tolist())
-        f_pio = st.selectbox("Piotroski cat.", opts_pio)
+        f_pio = st.selectbox("Piotroski", opts_pio, key="emp_pio")
     with ff5:
         opts_alin = ["Todos"] + sorted(df["sector_alineado"].dropna().unique().tolist())
-        f_alin = st.selectbox("Alineado", opts_alin)
+        f_alin = st.selectbox("Alineado", opts_alin, key="emp_alin")
+
+    fg1, fg2, fg3, fg4 = st.columns(4)
+    with fg1:
+        f_div = st.selectbox("Dividendo", ["Todos", "Con dividendo", "Sin dividendo"], key="emp_div")
+    with fg2:
+        f_div_min = st.slider("Dividend yield mínimo", 0.0, 5.0, 0.0, 0.1,
+                              format="%.1f%%", key="emp_div_min")
+    with fg3:
+        pe_vals = df["price_to_earnings_ratio"].dropna()
+        pe_vals = pe_vals[pe_vals > 0]
+        pe_max_cap = int(pe_vals.quantile(0.95)) if len(pe_vals) else 100
+        f_pe_max = st.slider("P/E máximo", 0, pe_max_cap, pe_max_cap, 1, key="emp_pe")
+    with fg4:
+        roic_vals = df["roic"].dropna()
+        roic_min_cap = float(roic_vals.min()) if len(roic_vals) else 0.0
+        roic_max_cap = float(roic_vals.quantile(0.95)) if len(roic_vals) else 0.5
+        f_roic_min = st.slider("ROIC mínimo", roic_min_cap, roic_max_cap, roic_min_cap,
+                               (roic_max_cap - roic_min_cap) / 20 if roic_max_cap > roic_min_cap else 0.01,
+                               format="%.2f", key="emp_roic")
 
     dff = df.copy()
-    if f_sec  != "Todos": dff = dff[dff["sector"]            == f_sec]
-    if f_cap  != "Todos": dff = dff[dff["market_cap_tier"]   == f_cap]
-    if f_az   != "Todos": dff = dff[dff["altman_zona"]       == f_az]
-    if f_pio  != "Todos": dff = dff[dff["piotroski_categoria"] == f_pio]
-    if f_alin != "Todos": dff = dff[dff["sector_alineado"]   == f_alin]
+    if f_sec   != "Todos": dff = dff[dff["sector"]              == f_sec]
+    if f_cap   != "Todos": dff = dff[dff["market_cap_tier"]     == f_cap]
+    if f_az    != "Todos": dff = dff[dff["altman_zona"]         == f_az]
+    if f_pio   != "Todos": dff = dff[dff["piotroski_categoria"] == f_pio]
+    if f_alin  != "Todos": dff = dff[dff["sector_alineado"]     == f_alin]
+    if f_div == "Con dividendo":
+        dff = dff[dff["dividend_yield"] > 0]
+    elif f_div == "Sin dividendo":
+        dff = dff[(dff["dividend_yield"].isna()) | (dff["dividend_yield"] == 0)]
+    if f_div_min > 0:
+        dff = dff[dff["dividend_yield"] >= f_div_min / 100]
+    if f_pe_max < pe_max_cap:
+        mask_pe = dff["price_to_earnings_ratio"].isna() | (
+            (dff["price_to_earnings_ratio"] > 0) & (dff["price_to_earnings_ratio"] <= f_pe_max)
+        )
+        dff = dff[mask_pe]
+    if f_roic_min > roic_min_cap:
+        dff = dff[dff["roic"].isna() | (dff["roic"] >= f_roic_min)]
 
     st.caption(f"{len(dff)} empresa(s) mostrada(s)")
 
     # ── Tabla principal ──────────────────────────────────────────────────────
-    def zona_badge(zona: str | None) -> str:
-        if not zona:
+    def _pct(val, decimales=1) -> str:
+        if val is None or (isinstance(val, float) and pd.isna(val)):
             return "—"
-        color, bg = ALTMAN_ZONA_COLOR.get(zona, ("#6b7280", "#f9fafb"))
-        return f'<span style="background:{bg};color:{color};border:1px solid {color};padding:1px 8px;border-radius:10px;font-size:.72rem;font-weight:600;">{zona}</span>'
+        return f"{float(val):.{decimales}%}"
+
+    def _num(val, decimales=1, sufijo="x") -> str:
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return "—"
+        return f"{float(val):.{decimales}f}{sufijo}"
 
     for _, row in dff.iterrows():
         ticker   = str(row.get("ticker") or "")
@@ -1077,91 +1161,141 @@ def pagina_micro():
         rank_f   = f"#{int(rank_v)}" if pd.notna(rank_v) else "—"
         multi_f  = f"{float(multi_v):.1f}" if pd.notna(multi_v) else "—"
         alin_ico = "✅" if alin == "ALIGNED" else "⬜"
+        dy       = row.get("dividend_yield")
+        dy_f     = f" · {float(dy):.1%} div" if pd.notna(dy) and float(dy) > 0 else ""
 
         titulo = (
             f"{rank_f}  {ticker}  ·  {sector_s}  ·  {cap}  ·  "
-            f"{alin_ico}  ·  Score {multi_f}"
+            f"{alin_ico}  ·  Score {multi_f}{dy_f}"
         )
 
         with st.expander(titulo):
-            az_v = row.get("altman_z_score")
-            if pd.notna(az_v):
-                az_color, az_bg = ALTMAN_ZONA_COLOR.get(az_zona, ("#6b7280", "#f9fafb"))
-                st.markdown(
-                    f'<div style="background:{az_bg};border-left:4px solid {az_color};'
-                    f'padding:4px 10px;border-radius:4px;margin-bottom:8px;font-size:.8rem;">'
-                    f'Altman Z: <strong>{float(az_v):.2f}</strong> — {zona_badge(az_zona)}</div>',
-                    unsafe_allow_html=True,
-                )
+            col_a, col_b, col_c, col_d, col_e = st.columns(5)
 
-            col_a, col_b, col_c, col_d = st.columns(4)
-
-            # Col A — Scores
+            # Col A — Scores del sistema
             with col_a:
-                st.markdown("**Scores**")
+                st.markdown("**Scores del sistema**")
                 qs = row.get("quality_score")
                 vs = row.get("value_score")
-                ms = row.get("multifactor_score")
-                st.metric("Quality",     f"{float(qs):.1f}"  if pd.notna(qs) else "—")
-                st.metric("Value",       f"{float(vs):.1f}"  if pd.notna(vs) else "—")
-                st.metric("Multifactor", f"{float(ms):.1f}"  if pd.notna(ms) else "—")
+                qs_f = f"{float(qs):.0f}/100" if pd.notna(qs) else "—"
+                vs_f = f"{float(vs):.0f}/100" if pd.notna(vs) else "—"
+                st.markdown(f"Calidad: **{qs_f}** {_estrellas(qs)}")
+                st.markdown(f"Valor: **{vs_f}** {_estrellas(vs)}")
+                st.markdown(f"Ranking global: **{rank_f}**")
+                alin_lbl = "✅ Alineado" if alin == "ALIGNED" else "⬜ Neutral"
+                st.markdown(f"Sector: {alin_lbl}")
 
-            # Col B — Técnico
+            # Col B — Rentabilidad y retornos
             with col_b:
-                st.markdown("**Técnico**")
-                rsi = row.get("rsi_14_semanal")
-                ma  = row.get("precio_vs_ma200")
-                m3  = row.get("momentum_3m")
-                m6  = row.get("momentum_6m")
-                if pd.notna(rsi):
-                    rv = float(rsi)
-                    rc = "#057a55" if 40 <= rv <= 65 else ("#e02424" if rv < 40 else "#c27803")
-                    st.markdown(f'RSI 14s: <span style="color:{rc};font-weight:700;">{rv:.1f}</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown("RSI 14s: —")
-                if pd.notna(ma):
-                    mv = float(ma); mc = "#057a55" if mv >= 0 else "#e02424"
-                    st.markdown(f'vs MA200: <span style="color:{mc};font-weight:700;">{mv:+.2f}%</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown("vs MA200: —")
-                st.markdown(f"Mom 3m: **{f'{float(m3):.1f}%' if pd.notna(m3) else '—'}**")
-                st.markdown(f"Mom 6m: **{f'{float(m6):.1f}%' if pd.notna(m6) else '—'}**")
+                st.markdown("**Rentabilidad**")
+                roic_v  = row.get("roic")
+                roe_v   = row.get("roe")
+                opm_v   = row.get("operating_profit_margin")
+                npm_v   = row.get("net_profit_margin")
+                fcfy_v  = row.get("fcf_yield")
+                iq_v    = row.get("income_quality")
+                st.markdown(f"ROIC: **{_pct(roic_v)}**")
+                st.markdown(f"ROE: **{_pct(roe_v)}**")
+                st.markdown(f"Margen operativo: **{_pct(opm_v)}**")
+                st.markdown(f"Margen neto: **{_pct(npm_v)}**")
+                st.markdown(f"FCF yield: **{_pct(fcfy_v)}**")
+                st.markdown(f"Income quality: **{_num(iq_v, 2, '')}**")
 
-            # Col C — Salud / signos
+            # Col C — Valuación y deuda
             with col_c:
-                st.markdown("**Salud**")
-                ps = row.get("piotroski_score")
-                rs = row.get("roic_signo")
-                rc_conf = row.get("roic_confiable")
-                ds = row.get("deuda_signo")
-                dc_conf = row.get("deuda_confiable")
-                if pd.notna(ps):
-                    pv = int(ps)
-                    pc = "#057a55" if pv >= 7 else ("#c27803" if pv >= 4 else "#e02424")
-                    st.markdown(f'Piotroski: <span style="color:{pc};font-weight:700;">{pv}</span>', unsafe_allow_html=True)
-                else:
-                    st.markdown("Piotroski: —")
-                roic_lbl = SIGNO_LABEL.get(int(rs) if pd.notna(rs) else None, "—")
-                deuda_lbl = SIGNO_LABEL.get(int(ds) if pd.notna(ds) else None, "—")
-                conf_r = "✓" if rc_conf else "—"
-                conf_d = "✓" if dc_conf else "—"
-                st.markdown(f"ROIC: **{roic_lbl}** {conf_r}")
-                st.markdown(f"Deuda: **{deuda_lbl}** {conf_d}")
+                st.markdown("**Valuación y deuda**")
+                pe_v    = row.get("price_to_earnings_ratio")
+                pfcf_v  = row.get("price_to_free_cash_flow_ratio")
+                eveb_v  = row.get("ev_to_ebitda")
+                de_v    = row.get("debt_to_equity_ratio")
+                nde_v   = row.get("net_debt_to_ebitda")
+                ic_v    = row.get("interest_coverage_ratio")
+                cr_v    = row.get("current_ratio")
+                st.markdown(f"P/E: **{_num(pe_v)}**")
+                st.markdown(f"P/FCF: **{_num(pfcf_v)}**")
+                st.markdown(f"EV/EBITDA: **{_num(eveb_v)}**")
+                st.markdown(f"D/E: **{_num(de_v, 2, '')}**")
+                st.markdown(f"Net Debt/EBITDA: **{_num(nde_v, 2, '')}**")
+                st.markdown(f"Cobertura intereses: **{_num(ic_v)}**")
+                st.markdown(f"Liquidez: **{_num(cr_v, 2, '')}**")
 
-            # Col D — Regresiones
+            # Col D — Técnico y dividendos
             with col_d:
-                st.markdown("**Regresiones**")
-                for lbl, trend_col, r2_col, conf_col in [
-                    ("ROIC",  "roic_tendencia",  "roic_r2",  "roic_confiable"),
-                    ("Deuda", "deuda_tendencia", "deuda_r2", "deuda_confiable"),
-                ]:
-                    tv = row.get(trend_col)
-                    r2 = row.get(r2_col)
-                    cv = row.get(conf_col)
-                    tv_f = f"{float(tv):+.4f}" if pd.notna(tv) else "—"
-                    r2_f = f"R²={float(r2):.2f}" if pd.notna(r2) else ""
-                    cv_f = " ✓" if cv else ""
-                    st.markdown(f"{lbl}: **{tv_f}** {r2_f}{cv_f}")
+                st.markdown("**Técnico y dividendos**")
+                rsi_v   = row.get("rsi_14_semanal")
+                ma_v    = row.get("precio_vs_ma200")
+                m3_v    = row.get("momentum_3m")
+                m6_v    = row.get("momentum_6m")
+                div_v   = row.get("dividend_yield")
+                if pd.notna(rsi_v):
+                    rv = float(rsi_v)
+                    rc = "#057a55" if 40 <= rv <= 65 else ("#e02424" if rv < 40 else "#c27803")
+                    st.markdown(f'RSI semanal: <span style="color:{rc};font-weight:700;">{rv:.0f}</span>', unsafe_allow_html=True)
+                else:
+                    st.markdown("RSI semanal: **—**")
+                if pd.notna(ma_v):
+                    mv = float(ma_v)
+                    mc = "#057a55" if mv >= 0 else "#e02424"
+                    st.markdown(f'vs MA200: <span style="color:{mc};font-weight:700;">{mv:+.1f}%</span>', unsafe_allow_html=True)
+                else:
+                    st.markdown("vs MA200: **—**")
+                st.markdown(f"Momentum 3M: **{_num(m3_v, 1, '%')}**")
+                st.markdown(f"Momentum 6M: **{_num(m6_v, 1, '%')}**")
+                if pd.notna(div_v) and float(div_v) > 0:
+                    st.markdown(f'Dividendo: <span style="color:#057a55;font-weight:700;">{float(div_v):.2%}</span>', unsafe_allow_html=True)
+                else:
+                    st.markdown("Dividendo: **Sin dividendo**")
+
+            # Col E — Salud financiera
+            with col_e:
+                st.markdown("**Salud financiera**")
+                az_v    = row.get("altman_z_score")
+                ps_v    = row.get("piotroski_score")
+                ps_cat  = str(row.get("piotroski_categoria") or "")
+                rs_v    = row.get("roic_signo")
+                rc_conf = row.get("roic_confiable")
+                ds_v    = row.get("deuda_signo")
+                dc_conf = row.get("deuda_confiable")
+
+                if pd.notna(az_v):
+                    az_color, az_bg = ALTMAN_ZONA_COLOR.get(az_zona, ("#6b7280", "#f9fafb"))
+                    st.markdown(
+                        f'Altman Z: <span style="background:{az_bg};color:{az_color};'
+                        f'padding:1px 7px;border-radius:8px;font-size:.8rem;font-weight:600;">'
+                        f'{float(az_v):.2f} {az_zona}</span>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown("Altman Z: **—**")
+
+                if pd.notna(ps_v):
+                    pv = int(ps_v)
+                    pc = "#057a55" if pv >= 7 else ("#c27803" if pv >= 4 else "#e02424")
+                    st.markdown(
+                        f'Piotroski: <span style="color:{pc};font-weight:700;">{pv}/9 {ps_cat}</span>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown("Piotroski: **—**")
+
+                roic_s_int = int(rs_v) if pd.notna(rs_v) else None
+                deuda_s_int = int(ds_v) if pd.notna(ds_v) else None
+                if roic_s_int == 1:
+                    roic_txt = '<span style="color:#057a55;font-weight:700;">↑ mejorando</span>'
+                elif roic_s_int == -1:
+                    roic_txt = '<span style="color:#e02424;font-weight:700;">↓ deteriorando</span>'
+                else:
+                    roic_txt = "<strong>—</strong>"
+                if deuda_s_int == -1:
+                    deuda_txt = '<span style="color:#057a55;font-weight:700;">↓ bajando</span>'
+                elif deuda_s_int == 1:
+                    deuda_txt = '<span style="color:#e02424;font-weight:700;">↑ subiendo</span>'
+                else:
+                    deuda_txt = "<strong>—</strong>"
+                conf_r = " ✓" if rc_conf else ""
+                conf_d = " ✓" if dc_conf else ""
+                st.markdown(f"ROIC: {roic_txt}{conf_r}", unsafe_allow_html=True)
+                st.markdown(f"Deuda: {deuda_txt}{conf_d}", unsafe_allow_html=True)
 
             ind = str(row.get("industry") or "—")
             st.caption(f"{sector_s} · {ind} · {cap}")
@@ -2810,7 +2944,7 @@ PAGINAS = {
     "📊 Cómo funciona":      pagina_como_funciona,
     "🌍 Macro":              pagina_macro,
     "🔄 Sectores":           pagina_sectores,
-    "🏢 Micro":              pagina_micro,
+    "🏢 Empresas":           pagina_micro,
     "🎯 Estrategia":         pagina_estrategia,
     "📈 Estrategia Opciones": pagina_opciones,
     "📊 Track Record":       pagina_track_record,
@@ -2819,7 +2953,7 @@ PAGINAS = {
 GRUPOS_SIDEBAR = [
     ["💬 Asistente"],
     ["📊 Cómo funciona"],
-    ["🌍 Macro", "🔄 Sectores", "🏢 Micro", "🎯 Estrategia", "📈 Estrategia Opciones"],
+    ["🌍 Macro", "🔄 Sectores", "🏢 Empresas", "🎯 Estrategia", "📈 Estrategia Opciones"],
     ["📊 Track Record"],
 ]
 
