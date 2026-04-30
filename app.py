@@ -44,6 +44,7 @@ def query(sql: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+@st.cache_data(ttl=300)
 def query_parametrizada(sql: str, params: tuple) -> pd.DataFrame:
     with get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -165,6 +166,18 @@ WHERE industry ILIKE %s
                        FROM seleccion.enriquecimiento)
 ORDER BY multifactor_rank
 LIMIT 10
+"""
+
+SQL_TOP8_TEMATICO = """
+SELECT ticker, quality_score, value_score,
+       altman_zona, piotroski_score,
+       rsi_14_semanal, roic_signo, dividend_yield
+FROM seleccion.enriquecimiento
+WHERE industry ILIKE %s
+  AND snapshot_date = (SELECT MAX(snapshot_date)
+                       FROM seleccion.enriquecimiento)
+ORDER BY multifactor_rank
+LIMIT 8
 """
 
 SQL_TOP10_SECTOR = """
@@ -573,6 +586,54 @@ ETF_INDUSTRY_MAP = {
     "LIT":  ("Copper",                            "%Aluminum%"),
 }
 
+# ETF temático → keyword para ILIKE en industry (CASO A)
+ETF_TEMATICO_MAP = {
+    "SOXX": "Semiconductors",
+    "IBB":  "Biotechnology",
+    "ARKG": "Biotechnology",
+    "OIH":  "Oil & Gas Equipment",
+    "GDX":  "Gold",
+    "COPX": "Copper",
+    "KBE":  "Bank",
+    "KRE":  "Banks",
+    "IGV":  "Software",
+    "XRT":  "Specialty Retail",
+    "IHF":  "Healthcare Plan",
+    "IHI":  "Medical - Device",
+    "XPH":  "Drug Manufacturers",
+    "PAVE": "Engineering & Construction",
+    "ROBO": "Industrial - Machin",
+    "FTEC": "Information Technology",
+    "HACK": "Security & Protection",
+}
+
+# Categorías y ETFs para el tab Temáticos
+CATEGORIAS_TEMATICAS = [
+    ("COMMODITIES — Metales preciosos",    ["GLD", "SLV", "PPLT"]),
+    ("COMMODITIES — Energía",              ["USO", "UNG", "URA", "OIH", "XOP", "AMLP"]),
+    ("COMMODITIES — Metales industriales", ["COPX", "REMX", "PICK", "GDX"]),
+    ("COMMODITIES — Agrícolas",            ["DBA", "WEAT", "CORN"]),
+    ("TECNOLOGÍA",                         ["SOXX", "FTEC", "IGV", "SKYY", "HACK", "AIQ"]),
+    ("SALUD",                              ["IBB", "XPH", "IHF", "IHI", "ARKG"]),
+    ("FINANCIERO",                         ["KBE", "KRE", "KIE", "IAI", "IPAY"]),
+    ("ENERGÍA RENOVABLE",                  ["ICLN", "TAN", "FAN"]),
+    ("CONSUMO",                            ["XRT", "PBJ", "JETS", "CARZ", "AWAY"]),
+    ("INFRAESTRUCTURA",                    ["PAVE", "XTN", "ROBO", "WOOD", "SRVR"]),
+    ("INTERNACIONAL",                      ["EEM", "EFA", "FXI", "EWZ", "INDA"]),
+    ("RENTA FIJA",                         ["TLT", "HYG"]),
+]
+
+# Interpretación de RSI
+def _rsi_interp(rsi_val) -> str:
+    if rsi_val is None or pd.isna(rsi_val):
+        return "—"
+    v = float(rsi_val)
+    if v < 30:   return "Sobrevendido"
+    if v < 45:   return "Bajo"
+    if v < 55:   return "Neutral"
+    if v < 70:   return "Fuerte"
+    return "Sobrecomprado"
+
 ETF_A_SECTOR_GICS = {
     "XLK":  "Technology",
     "XLV":  "Healthcare",
@@ -669,6 +730,60 @@ def _render_top10_empresas(df_top: "pd.DataFrame") -> None:
             unsafe_allow_html=True,
         )
 
+def _render_empresas_compacto(df: "pd.DataFrame") -> None:
+    """Tabla compacta: ticker, quality★, value★, Altman, Piotroski, RSI, ROIC, Dividendo."""
+    if df.empty:
+        st.info("Sin empresas para este filtro.")
+        return
+
+    th = st.columns([1.2, 1.8, 1.8, 1.8, 1.5, 1.5, 1.2, 1.5])
+    for col, txt in zip(th, ["Ticker", "Quality", "Value", "Altman", "Piotroski", "RSI sem", "ROIC", "Dividendo"]):
+        col.markdown(f"**{txt}**")
+    st.markdown("<hr style='margin:3px 0 5px;border-color:#e5e7eb;'>", unsafe_allow_html=True)
+
+    for _, row in df.iterrows():
+        az         = str(row.get("altman_zona") or "").lower()
+        az_bg, az_fg = ALTMAN_COLOR.get(az, ("#f9fafb", "#6b7280"))
+        ps_v       = row.get("piotroski_score")
+        ps_int     = int(ps_v) if ps_v is not None and not pd.isna(ps_v) else None
+        ps_col     = "#057a55" if ps_int is not None and ps_int >= 7 else (
+                     "#c27803" if ps_int is not None and ps_int >= 5 else "#e02424")
+        ps_f       = f"{ps_int}/9" if ps_int is not None else "—"
+        rsi_v      = row.get("rsi_14_semanal")
+        rsi_f      = f"{float(rsi_v):.0f}" if rsi_v is not None and not pd.isna(rsi_v) else "—"
+        rsi_col    = ("#057a55" if rsi_v is not None and not pd.isna(rsi_v) and 40 <= float(rsi_v) <= 65
+                     else ("#e02424" if rsi_v is not None and not pd.isna(rsi_v) and float(rsi_v) < 40
+                     else "#c27803"))
+        roic_s     = row.get("roic_signo")
+        roic_ico   = "↑" if roic_s == 1 else ("↓" if roic_s == -1 else "—")
+        roic_col   = "#057a55" if roic_s == 1 else ("#e02424" if roic_s == -1 else "#6b7280")
+        dy_v       = row.get("dividend_yield")
+        dy_f       = f"{float(dy_v):.1%}" if dy_v is not None and not pd.isna(dy_v) and float(dy_v) > 0 else "—"
+
+        r = st.columns([1.2, 1.8, 1.8, 1.8, 1.5, 1.5, 1.2, 1.5])
+        r[0].markdown(f"**{row['ticker']}**")
+        r[1].markdown(_estrellas(row.get("quality_score")))
+        r[2].markdown(_estrellas(row.get("value_score")))
+        r[3].markdown(
+            f'<span style="background:{az_bg};color:{az_fg};padding:1px 7px;'
+            f'border-radius:8px;font-size:.78rem;">{az or "—"}</span>',
+            unsafe_allow_html=True,
+        )
+        r[4].markdown(
+            f'<span style="color:{ps_col};font-weight:600;">{ps_f}</span>',
+            unsafe_allow_html=True,
+        )
+        r[5].markdown(
+            f'<span style="color:{rsi_col};font-weight:600;">{rsi_f}</span>',
+            unsafe_allow_html=True,
+        )
+        r[6].markdown(
+            f'<span style="color:{roic_col};font-weight:700;">{roic_ico}</span>',
+            unsafe_allow_html=True,
+        )
+        r[7].markdown(dy_f)
+
+
 TIPO_LABEL = {
     "sector_gics":   "Sector",
     "industria":     "Temático",
@@ -746,7 +861,7 @@ def _render_tabla_etfs(df: pd.DataFrame, key_prefix: str, con_filtros: bool = Tr
 
 
 def pagina_sectores():
-    st.title("Sectores")
+    st.title("Sectores y ETF")
 
     diag_tec = query(SQL_SECTOR_DIAG_TEC)
     df_gics  = query(SQL_SECTOR_GICS)
@@ -754,7 +869,7 @@ def pagina_sectores():
     nota     = query(SQL_SECTOR_NOTA)
     df_etf   = query(SQL_ETF_SIGNAL)
 
-    # ── Banner diagnóstico (siempre visible, encima de tabs) ─────────────────
+    # ── Banner diagnóstico ───────────────────────────────────────────────────
     if not diag_tec.empty:
         dt     = diag_tec.iloc[0]
         diag_k = str(dt.get("diagnostico_sector") or "SEÑAL_MIXTA").upper()
@@ -785,13 +900,10 @@ def pagina_sectores():
 
     st.divider()
 
-    # ── Tabs principales ─────────────────────────────────────────────────────
-    tab_gics, tab_señal, tab_todos = st.tabs(
-        ["Sectores", "Temáticos", "Ver todos"]
-    )
+    tab_gics, tab_señal, tab_todos = st.tabs(["Sectores", "Temáticos", "Ver todos"])
 
     # ════════════════════════════════════════════════════════════════════════
-    # TAB 1 — Sectores GICS
+    # TAB 1 — Sectores GICS (expanders por fila)
     # ════════════════════════════════════════════════════════════════════════
     with tab_gics:
         st.subheader("Los 11 sectores del mercado")
@@ -801,14 +913,11 @@ def pagina_sectores():
                 if col_num in df_gics.columns:
                     df_gics[col_num] = pd.to_numeric(df_gics[col_num], errors="coerce")
 
-            h0, h1, h2, h3, h4, h5, h6 = st.columns([2.5, 1.2, 2, 1.2, 1.5, 2, 1.2])
+            h0, h1, h2, h3, h4, h5 = st.columns([2.5, 1.2, 2.2, 1.2, 1.5, 2])
             for col, txt in [(h0, "Sector"), (h1, "ETF"), (h2, "Estado"),
-                              (h3, "RSI"), (h4, "Ret 3M"), (h5, "Alineación Macro"), (h6, "")]:
+                              (h3, "RSI"), (h4, "Ret 3M"), (h5, "Alineación Macro")]:
                 col.markdown(f"**{txt}**")
             st.markdown("<hr style='margin:4px 0 8px;border-color:#e5e7eb;'>", unsafe_allow_html=True)
-
-            if "sector_clickeado" not in st.session_state:
-                st.session_state.sector_clickeado = None
 
             for _, row in df_gics.iterrows():
                 ticker  = str(row.get("ticker") or "")
@@ -819,13 +928,13 @@ def pagina_sectores():
                 nombre  = SECTOR_NOMBRE.get(ticker, ticker)
 
                 icono_e, bg_e, color_e = ESTADO_SECTOR.get(estado, ("⬜", "#f9fafb", "#9ca3af"))
-                rsi_f   = f"{float(rsi):.1f}" if rsi is not None and not pd.isna(rsi) else "—"
-                ret3m_v = float(ret3m) if ret3m is not None and not pd.isna(ret3m) else None
-                ret3m_f = f"{ret3m_v:+.1f}%" if ret3m_v is not None else "—"
-                ret_col = "#057a55" if ret3m_v is not None and ret3m_v >= 0 else "#e02424"
+                rsi_f    = f"{float(rsi):.1f}" if rsi is not None and not pd.isna(rsi) else "—"
+                ret3m_v  = float(ret3m) if ret3m is not None and not pd.isna(ret3m) else None
+                ret3m_f  = f"{ret3m_v:+.1f}%" if ret3m_v is not None else "—"
+                ret_col  = "#057a55" if ret3m_v is not None and ret3m_v >= 0 else "#e02424"
                 alin_txt = "✅ Alineado" if alin == "ALIGNED" else "⬜ Neutral"
 
-                c0, c1, c2, c3, c4, c5, c6 = st.columns([2.5, 1.2, 2, 1.2, 1.5, 2, 1.2])
+                c0, c1, c2, c3, c4, c5 = st.columns([2.5, 1.2, 2.2, 1.2, 1.5, 2])
                 c0.markdown(f"**{nombre}**")
                 c1.markdown(f"`{ticker}`")
                 c2.markdown(
@@ -840,26 +949,14 @@ def pagina_sectores():
                     unsafe_allow_html=True,
                 )
                 c5.markdown(alin_txt)
-                if c6.button("Ver →", key=f"btn_sector_{ticker}"):
-                    st.session_state.sector_clickeado = ticker
 
-            # ── Panel top 10 empresas del sector clickeado ───────────────────
-            sel = st.session_state.get("sector_clickeado")
-            if sel:
-                sector_gics = ETF_A_SECTOR_GICS.get(sel)
-                nombre_sel  = SECTOR_NOMBRE.get(sel, sel)
-                st.markdown("---")
-                col_titulo, col_cerrar = st.columns([8, 1])
-                col_titulo.markdown(f"### Top 10 empresas — {nombre_sel} (`{sel}`)")
-                if col_cerrar.button("✕ Cerrar", key="btn_cerrar_sector"):
-                    st.session_state.sector_clickeado = None
-                    st.rerun()
-
-                if sector_gics:
-                    df_top = query_parametrizada(SQL_TOP10_SECTOR, (sector_gics,))
-                    _render_top10_empresas(df_top)
-                else:
-                    st.warning(f"No hay mapeo GICS definido para {sel}.")
+                sector_gics = ETF_A_SECTOR_GICS.get(ticker)
+                with st.expander(f"Ver empresas de {nombre}"):
+                    if sector_gics:
+                        df_top = query_parametrizada(SQL_TOP10_SECTOR, (sector_gics,))
+                        _render_empresas_compacto(df_top)
+                    else:
+                        st.info(f"Sin mapeo GICS para {ticker}.")
         else:
             st.info("Sin datos en sector.v_sector_ranking.")
 
@@ -917,7 +1014,7 @@ def pagina_sectores():
             st.info("Sin notas sectoriales disponibles.")
 
     # ════════════════════════════════════════════════════════════════════════
-    # TAB 2 — Señales ETF
+    # TAB 2 — Temáticos (categorías + expanders)
     # ════════════════════════════════════════════════════════════════════════
     with tab_señal:
         if df_etf.empty:
@@ -927,97 +1024,104 @@ def pagina_sectores():
                 if col_num in df_etf.columns:
                     df_etf[col_num] = pd.to_numeric(df_etf[col_num], errors="coerce")
 
-            # Sección A — Métricas resumen
+            # Métricas resumen
             n_total      = len(df_etf)
             n_positivos  = int(df_etf["señal"].isin(["COMPRAR", "INTERESANTE"]).sum())
             n_monitorear = int((df_etf["señal"] == "MONITOREAR").sum())
             n_evitar     = int(df_etf["señal"].isin(["EVITAR", "ESPERAR_PULLBACK"]).sum())
-
             ma, mb, mc, md = st.columns(4)
-            ma.metric("ETFs analizados",  n_total)
-            mb.metric("Interesantes",     n_positivos)
-            mc.metric("Monitorear",       n_monitorear)
-            md.metric("Evitar",           n_evitar)
-
+            ma.metric("ETFs analizados", n_total)
+            mb.metric("Interesantes",    n_positivos)
+            mc.metric("Monitorear",      n_monitorear)
+            md.metric("Evitar",          n_evitar)
             st.divider()
 
-            # Sección B — Cards por señal (solo COMPRAR, INTERESANTE, MONITOREAR)
-            ORDEN_CARDS = ["COMPRAR", "INTERESANTE", "MONITOREAR"]
-            df_cards = df_etf[df_etf["señal"].isin(ORDEN_CARDS)].copy()
+            # Lookup dict por ticker
+            etf_dict = df_etf.set_index("ticker").to_dict(orient="index")
 
-            if "etf_clickeado" not in st.session_state:
-                st.session_state.etf_clickeado = None
+            for cat_nombre, etf_list in CATEGORIAS_TEMATICAS:
+                st.subheader(cat_nombre)
 
-            if not df_cards.empty:
-                cols_grid = st.columns(3)
-                for i, (_, row) in enumerate(df_cards.iterrows()):
-                    ticker  = str(row.get("ticker") or "")
-                    nombre  = str(row.get("nombre") or ticker)
-                    tipo    = TIPO_LABEL.get(str(row.get("tipo") or ""), "—")
-                    señal   = str(row.get("señal") or "NEUTRAL")
-                    score   = row.get("score")
-                    rsi     = row.get("rsi_rs_semanal")
-                    ret3m   = row.get("ret_3m")
-                    alin    = str(row.get("alineacion_macro") or "")
-                    razon   = str(row.get("razon") or "")
+                # Encabezado de columnas
+                eh0, eh1, eh2, eh3, eh4, eh5 = st.columns([1.2, 3.5, 2, 1.2, 1.5, 1.5])
+                for col, txt in [(eh0, "ETF"), (eh1, "Nombre"), (eh2, "Señal"),
+                                  (eh3, "RSI"), (eh4, "Ret 3M"), (eh5, "Score")]:
+                    col.markdown(f"**{txt}**")
+                st.markdown("<hr style='margin:2px 0 4px;border-color:#e5e7eb;'>", unsafe_allow_html=True)
+
+                for ticker in etf_list:
+                    erow   = etf_dict.get(ticker, {})
+                    nombre = str(erow.get("nombre") or ticker)
+                    señal  = str(erow.get("señal") or "—")
+                    score  = erow.get("score")
+                    rsi    = erow.get("rsi_rs_semanal")
+                    ret3m  = erow.get("ret_3m")
+                    ret6m  = erow.get("ret_6m")
+                    alin   = str(erow.get("alineacion_macro") or "")
+                    razon  = str(erow.get("razon") or "")
+                    estado_etf = str(erow.get("estado") or "")
 
                     bg_s, txt_s, brd_s = SEÑAL_BADGE_STYLE.get(señal, ("#f9fafb", "#6b7280", "#9ca3af"))
-                    score_v = float(score) if score is not None and not pd.isna(score) else 0.0
-                    score_n = min(max(score_v / 100, 0), 1)
-                    score_f = f"{score_v:.0f}"
+                    score_f = f"{float(score):.0f}" if score is not None and not pd.isna(score) else "—"
                     rsi_f   = f"{float(rsi):.0f}" if rsi is not None and not pd.isna(rsi) else "—"
                     ret_v   = float(ret3m) if ret3m is not None and not pd.isna(ret3m) else None
                     ret_f   = f"{ret_v:+.1f}%" if ret_v is not None else "—"
                     ret_col = "#057a55" if ret_v is not None and ret_v >= 0 else "#e02424"
-                    alin_txt = "✅ Alineado con macro" if alin == "ALIGNED" else "⬜ Sin alineación macro"
+                    ret6_v  = float(ret6m) if ret6m is not None and not pd.isna(ret6m) else None
+                    ret6_f  = f"{ret6_v:+.1f}%" if ret6_v is not None else "—"
+                    ret6_col = "#057a55" if ret6_v is not None and ret6_v >= 0 else "#e02424"
 
-                    with cols_grid[i % 3]:
-                        with st.container(border=True):
-                            st.markdown(
-                                f'<div style="font-size:1.15rem;font-weight:800;">{nombre[:30]}</div>'
-                                f'<div style="font-size:.8rem;color:#6b7280;">{ticker} · {tipo}</div>',
-                                unsafe_allow_html=True,
-                            )
-                            st.markdown(
-                                f'<span style="background:{bg_s};color:{txt_s};border:1px solid {brd_s};'
-                                f'padding:3px 12px;border-radius:12px;font-size:.82rem;font-weight:700;">'
-                                f'{señal}</span>',
-                                unsafe_allow_html=True,
-                            )
-                            st.progress(score_n, text=f"Convicción: {score_f}/100")
-                            st.markdown(
-                                f'RSI: **{rsi_f}** &nbsp;|&nbsp; '
-                                f'Ret 3M: <span style="color:{ret_col};font-weight:600;">{ret_f}</span>',
-                                unsafe_allow_html=True,
-                            )
-                            st.markdown(alin_txt)
-                            if razon:
-                                st.caption(razon)
-                            if ticker in ETF_INDUSTRY_MAP:
-                                if st.button("Ver empresas →", key=f"btn_etf_{ticker}"):
-                                    st.session_state.etf_clickeado = ticker
+                    c0, c1, c2, c3, c4, c5 = st.columns([1.2, 3.5, 2, 1.2, 1.5, 1.5])
+                    c0.markdown(f"**`{ticker}`**")
+                    c1.markdown(nombre[:40])
+                    c2.markdown(
+                        f'<span style="background:{bg_s};color:{txt_s};border:1px solid {brd_s};'
+                        f'padding:2px 8px;border-radius:10px;font-size:.78rem;font-weight:600;">'
+                        f'{señal}</span>' if señal != "—" else "—",
+                        unsafe_allow_html=True,
+                    )
+                    c3.markdown(rsi_f)
+                    c4.markdown(
+                        f'<span style="color:{ret_col};font-weight:600;">{ret_f}</span>',
+                        unsafe_allow_html=True,
+                    )
+                    c5.markdown(f"**{score_f}**")
 
-            # ── Panel top-10 empresas del ETF temático clickeado ────────────
-            etf_sel = st.session_state.get("etf_clickeado")
-            if etf_sel and etf_sel in ETF_INDUSTRY_MAP:
-                industry_exacta, fallback_kw = ETF_INDUSTRY_MAP[etf_sel]
-                st.markdown("---")
-                col_titulo, col_cerrar = st.columns([8, 1])
-                col_titulo.markdown(f"### Top 10 empresas — `{etf_sel}` · {industry_exacta}")
-                if col_cerrar.button("✕ Cerrar", key="btn_cerrar_etf"):
-                    st.session_state.etf_clickeado = None
-                    st.rerun()
+                    with st.expander(f"{ticker} — {nombre[:35]}"):
+                        if ticker in ETF_TEMATICO_MAP:
+                            # CASO A — top 8 empresas de la industria
+                            keyword = ETF_TEMATICO_MAP[ticker]
+                            df_emp = query_parametrizada(SQL_TOP8_TEMATICO, (f"%{keyword}%",))
+                            st.caption(f"Empresas de industria: {keyword}")
+                            _render_empresas_compacto(df_emp)
+                        else:
+                            # CASO B — análisis extendido del ETF
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                st.markdown("**Retornos**")
+                                st.markdown(
+                                    f'Ret 3M: <span style="color:{ret_col};font-weight:700;">{ret_f}</span> &nbsp;|&nbsp; '
+                                    f'Ret 6M: <span style="color:{ret6_col};font-weight:700;">{ret6_f}</span>',
+                                    unsafe_allow_html=True,
+                                )
+                                st.markdown(f"**RSI:** {rsi_f} — *{_rsi_interp(rsi)}*")
+                                alin_txt = "✅ Alineado con macro" if alin == "ALIGNED" else "⬜ Sin alineación macro"
+                                st.markdown(f"**Alineación:** {alin_txt}")
+                                if estado_etf:
+                                    st.markdown(f"**Estado técnico:** {estado_etf}")
+                            with col_b:
+                                st.markdown("**Señal del sistema**")
+                                if señal != "—":
+                                    st.markdown(
+                                        f'<span style="background:{bg_s};color:{txt_s};border:1px solid {brd_s};'
+                                        f'padding:3px 12px;border-radius:12px;font-size:.88rem;font-weight:700;">'
+                                        f'{señal} — {score_f}/100</span>',
+                                        unsafe_allow_html=True,
+                                    )
+                                if razon:
+                                    st.caption(razon)
 
-                df_top = query_parametrizada(SQL_TOP10_INDUSTRY, (industry_exacta,))
-                if df_top.empty and fallback_kw:
-                    df_top = query_parametrizada(SQL_TOP10_INDUSTRY_ILIKE, (fallback_kw,))
-                _render_top10_empresas(df_top)
-
-            st.divider()
-
-            # Sección C — Tabla completa expandible
-            with st.expander("Ver análisis completo — 75 ETFs"):
-                _render_tabla_etfs(df_etf.copy(), key_prefix="exp", con_filtros=False)
+                st.markdown("")  # separación entre categorías
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB 3 — Ver todos los ETFs
@@ -2943,7 +3047,7 @@ PAGINAS = {
     "💬 Asistente":          pagina_asistente,
     "📊 Cómo funciona":      pagina_como_funciona,
     "🌍 Macro":              pagina_macro,
-    "🔄 Sectores":           pagina_sectores,
+    "🔄 Sectores y ETF":     pagina_sectores,
     "🏢 Empresas":           pagina_micro,
     "🎯 Estrategia":         pagina_estrategia,
     "📈 Estrategia Opciones": pagina_opciones,
@@ -2953,7 +3057,7 @@ PAGINAS = {
 GRUPOS_SIDEBAR = [
     ["💬 Asistente"],
     ["📊 Cómo funciona"],
-    ["🌍 Macro", "🔄 Sectores", "🏢 Empresas", "🎯 Estrategia", "📈 Estrategia Opciones"],
+    ["🌍 Macro", "🔄 Sectores y ETF", "🏢 Empresas", "🎯 Estrategia", "📈 Estrategia Opciones"],
     ["📊 Track Record"],
 ]
 
