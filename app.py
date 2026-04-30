@@ -44,6 +44,14 @@ def query(sql: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def query_parametrizada(sql: str, params: tuple) -> pd.DataFrame:
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    return pd.DataFrame(rows)
+
+
 # ── Queries ─────────────────────────────────────────────────────────────────
 
 SQL_MACRO = """
@@ -127,6 +135,21 @@ WHERE tipo = 'sector'
   AND ticker IN ('XLK','XLV','XLF','XLI','XLE',
                  'XLP','XLY','XLC','XLB','XLRE','XLU')
 ORDER BY score_total DESC
+"""
+
+SQL_TOP10_SECTOR = """
+SELECT ticker, quality_score, value_score,
+       multifactor_score, multifactor_rank,
+       altman_z_score, altman_zona,
+       piotroski_score, piotroski_categoria,
+       rsi_14_semanal, precio_vs_ma200,
+       roic_signo, deuda_signo, dividend_yield
+FROM seleccion.enriquecimiento
+WHERE sector = %s
+  AND snapshot_date = (SELECT MAX(snapshot_date)
+                       FROM seleccion.enriquecimiento)
+ORDER BY multifactor_rank
+LIMIT 10
 """
 
 SQL_SECTOR_TOP_BOTTOM = """
@@ -462,6 +485,40 @@ SEÑAL_BADGE_STYLE = {
     "NEUTRAL":          ("#f9fafb", "#6b7280", "#9ca3af"),
 }
 
+ETF_A_SECTOR_GICS = {
+    "XLK":  "Technology",
+    "XLV":  "Healthcare",
+    "XLF":  "Financial Services",
+    "XLI":  "Industrials",
+    "XLE":  "Energy",
+    "XLP":  "Consumer Defensive",
+    "XLY":  "Consumer Cyclical",
+    "XLC":  "Communication Services",
+    "XLB":  "Basic Materials",
+    "XLRE": "Real Estate",
+    "XLU":  "Utilities",
+}
+
+ALTMAN_COLOR = {
+    "safe":     ("#057a55", "#f3faf7"),
+    "grey":     ("#c27803", "#fdf6b2"),
+    "distress": ("#e02424", "#fdf2f2"),
+}
+
+PIOTROSKI_COLOR = {
+    "fuerte": "#057a55",
+    "neutral": "#c27803",
+    "debil":   "#e02424",
+}
+
+def _estrellas(val, maximo=100) -> str:
+    """Convierte score 0-100 en 1-5 estrellas."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "—"
+    v = float(val)
+    stars = max(1, min(5, round(v / maximo * 5)))
+    return "★" * stars + "☆" * (5 - stars)
+
 TIPO_LABEL = {
     "sector_gics":   "Sector",
     "industria":     "Temático",
@@ -594,11 +651,14 @@ def pagina_sectores():
                 if col_num in df_gics.columns:
                     df_gics[col_num] = pd.to_numeric(df_gics[col_num], errors="coerce")
 
-            h0, h1, h2, h3, h4, h5 = st.columns([3, 1.2, 2, 1.2, 1.5, 2])
+            h0, h1, h2, h3, h4, h5, h6 = st.columns([2.5, 1.2, 2, 1.2, 1.5, 2, 1.2])
             for col, txt in [(h0, "Sector"), (h1, "ETF"), (h2, "Estado"),
-                              (h3, "RSI"), (h4, "Ret 3M"), (h5, "Alineación")]:
+                              (h3, "RSI"), (h4, "Ret 3M"), (h5, "Alineación Macro"), (h6, "")]:
                 col.markdown(f"**{txt}**")
             st.markdown("<hr style='margin:4px 0 8px;border-color:#e5e7eb;'>", unsafe_allow_html=True)
+
+            if "sector_clickeado" not in st.session_state:
+                st.session_state.sector_clickeado = None
 
             for _, row in df_gics.iterrows():
                 ticker  = str(row.get("ticker") or "")
@@ -615,7 +675,7 @@ def pagina_sectores():
                 ret_col = "#057a55" if ret3m_v is not None and ret3m_v >= 0 else "#e02424"
                 alin_txt = "✅ Alineado" if alin == "ALIGNED" else "⬜ Neutral"
 
-                c0, c1, c2, c3, c4, c5 = st.columns([3, 1.2, 2, 1.2, 1.5, 2])
+                c0, c1, c2, c3, c4, c5, c6 = st.columns([2.5, 1.2, 2, 1.2, 1.5, 2, 1.2])
                 c0.markdown(f"**{nombre}**")
                 c1.markdown(f"`{ticker}`")
                 c2.markdown(
@@ -630,6 +690,83 @@ def pagina_sectores():
                     unsafe_allow_html=True,
                 )
                 c5.markdown(alin_txt)
+                if c6.button("Ver →", key=f"btn_sector_{ticker}"):
+                    st.session_state.sector_clickeado = ticker
+
+            # ── Panel top 10 empresas del sector clickeado ───────────────────
+            sel = st.session_state.get("sector_clickeado")
+            if sel:
+                sector_gics = ETF_A_SECTOR_GICS.get(sel)
+                nombre_sel  = SECTOR_NOMBRE.get(sel, sel)
+                st.markdown("---")
+                col_titulo, col_cerrar = st.columns([8, 1])
+                col_titulo.markdown(f"### Top 10 empresas — {nombre_sel} (`{sel}`)")
+                if col_cerrar.button("✕ Cerrar", key="btn_cerrar_sector"):
+                    st.session_state.sector_clickeado = None
+                    st.rerun()
+
+                if sector_gics:
+                    df_top = query_parametrizada(SQL_TOP10_SECTOR, (sector_gics,))
+                    if df_top.empty:
+                        st.info("Sin empresas en seleccion.enriquecimiento para este sector.")
+                    else:
+                        th0, th1, th2, th3, th4, th5, th6, th7, th8 = st.columns(
+                            [1.5, 2, 2, 2, 1.5, 1.5, 1.2, 1.2, 1.2]
+                        )
+                        for col, txt in [
+                            (th0, "Ticker"), (th1, "Quality"), (th2, "Value"),
+                            (th3, "Altman Z"), (th4, "Piotroski"),
+                            (th5, "RSI sem"), (th6, "vs MA200"), (th7, "ROIC"), (th8, "Deuda"),
+                        ]:
+                            col.markdown(f"**{txt}**")
+                        st.markdown("<hr style='margin:4px 0 6px;border-color:#e5e7eb;'>",
+                                    unsafe_allow_html=True)
+
+                        for _, erow in df_top.iterrows():
+                            az       = str(erow.get("altman_zona") or "").lower()
+                            az_bg, az_fg = ALTMAN_COLOR.get(az, ("#f9fafb", "#6b7280"))
+                            piot_cat = str(erow.get("piotroski_categoria") or "").lower()
+                            piot_col = PIOTROSKI_COLOR.get(piot_cat, "#6b7280")
+                            rsi_s    = erow.get("rsi_14_semanal")
+                            rsi_f2   = f"{float(rsi_s):.1f}" if rsi_s is not None and not pd.isna(rsi_s) else "—"
+                            ma200    = erow.get("precio_vs_ma200")
+                            ma200_f  = f"{float(ma200):+.1f}%" if ma200 is not None and not pd.isna(ma200) else "—"
+                            roic_s   = erow.get("roic_signo")
+                            deuda_s  = erow.get("deuda_signo")
+                            roic_ico  = "↑" if roic_s == 1 else ("↓" if roic_s == -1 else "—")
+                            deuda_ico = "↓" if deuda_s == -1 else ("↑" if deuda_s == 1 else "—")
+                            roic_col  = "#057a55" if roic_s == 1 else ("#e02424" if roic_s == -1 else "#6b7280")
+                            deuda_col = "#057a55" if deuda_s == -1 else ("#e02424" if deuda_s == 1 else "#6b7280")
+                            piot_sc   = erow.get("piotroski_score")
+                            piot_label = f"{int(piot_sc)}/9" if piot_sc is not None and not pd.isna(piot_sc) else "—"
+
+                            r0, r1, r2, r3, r4, r5, r6, r7, r8 = st.columns(
+                                [1.5, 2, 2, 2, 1.5, 1.5, 1.2, 1.2, 1.2]
+                            )
+                            r0.markdown(f"**{erow['ticker']}**")
+                            r1.markdown(_estrellas(erow.get("quality_score")))
+                            r2.markdown(_estrellas(erow.get("value_score")))
+                            r3.markdown(
+                                f'<span style="background:{az_bg};color:{az_fg};padding:1px 8px;'
+                                f'border-radius:8px;font-size:.8rem;">{az or "—"}</span>',
+                                unsafe_allow_html=True,
+                            )
+                            r4.markdown(
+                                f'<span style="color:{piot_col};font-weight:600;">{piot_label}</span>',
+                                unsafe_allow_html=True,
+                            )
+                            r5.markdown(rsi_f2)
+                            r6.markdown(ma200_f)
+                            r7.markdown(
+                                f'<span style="color:{roic_col};font-weight:700;">{roic_ico}</span>',
+                                unsafe_allow_html=True,
+                            )
+                            r8.markdown(
+                                f'<span style="color:{deuda_col};font-weight:700;">{deuda_ico}</span>',
+                                unsafe_allow_html=True,
+                            )
+                else:
+                    st.warning(f"No hay mapeo GICS definido para {sel}.")
         else:
             st.info("Sin datos en sector.v_sector_ranking.")
 
