@@ -209,15 +209,27 @@ ORDER BY sector, multifactor_rank
 
 SQL_EMPRESA_DETALLE_SECTOR = """
 SELECT e.quality_score, e.value_score,
+       e.multifactor_score, e.multifactor_rank,
        e.altman_z_score, e.altman_zona,
        e.piotroski_score, e.piotroski_categoria,
        e.rsi_14_semanal, e.precio_vs_ma200,
-       e.momentum_3m, e.momentum_6m,
-       e.roic_signo, e.deuda_signo,
-       e.sector_alineado, e.dividend_yield,
+       e.momentum_3m, e.momentum_6m, e.momentum_12m,
+       e.volume_ratio_20d, e.sector_alineado,
+       e.roic_signo, e.roic_confiable,
+       e.deuda_signo, e.deuda_confiable,
+       e.dividend_yield, e.industry, e.market_cap_tier,
        r.operating_profit_margin,
+       r.net_profit_margin,
+       r.price_to_earnings_ratio,
+       r.price_to_free_cash_flow_ratio,
+       r.debt_to_equity_ratio,
        r.interest_coverage_ratio,
-       k.roic, k.net_debt_to_ebitda
+       r.current_ratio,
+       k.roic, k.roe,
+       k.ev_to_ebitda,
+       k.net_debt_to_ebitda,
+       k.income_quality,
+       k.fcf_yield
 FROM seleccion.enriquecimiento e
 LEFT JOIN ingest.ratios_ttm r
     ON r.ticker = e.ticker
@@ -227,6 +239,21 @@ LEFT JOIN ingest.keymetrics k
     AND k.fecha_consulta = (SELECT MAX(fecha_consulta) FROM ingest.keymetrics)
 WHERE e.ticker = %s
   AND e.snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.enriquecimiento)
+"""
+
+SQL_ETF_DETALLE = """
+SELECT s.ticker, s.señal, s.score, s.score_tecnico,
+       s.razon, s.estado_macro,
+       e.nombre, e.tipo, e.industria,
+       r.rsi_rs_semanal, r.ret_1m, r.ret_3m, r.ret_6m,
+       r.rs_vs_spy, r.rs_percentil,
+       r.dist_max_52w, r.estado, r.alineacion_macro,
+       r.vol_ratio, r.obv_slope
+FROM etf.signal s
+JOIN sector.sector_etfs e ON e.ticker = s.ticker
+JOIN sector.v_sector_ranking r ON r.ticker = s.ticker
+WHERE s.ticker = %s
+  AND s.snapshot_date = (SELECT MAX(snapshot_date) FROM etf.signal)
 """
 
 SQL_EMPRESAS_INDUSTRIA_KEYWORD = """
@@ -727,83 +754,221 @@ def _query_empresas_industria_keyword(keyword: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+@st.cache_data(ttl=3600)
+def _query_etf_detalle(ticker: str) -> dict:
+    """Carga datos completos de un ETF para panel de detalle. Cacheado 1h."""
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(SQL_ETF_DETALLE, (ticker,))
+            row = cur.fetchone()
+    return dict(row) if row else {}
+
+
+def _render_etf_detalle_tematico(etf_ticker: str) -> None:
+    """Panel 3 columnas con retornos, momentum y señal para ETFs sin empresas individuales."""
+    datos = _query_etf_detalle(etf_ticker)
+    if not datos:
+        st.caption("Sin datos extendidos para este ETF.")
+        return
+
+    def _nonan(v):
+        return None if v is None or (isinstance(v, float) and pd.isna(v)) else float(v)
+    def _fmtpct(v, dec=1, signo=True):
+        if v is None: return "—"
+        return f"{v:+.{dec}f}%" if signo else f"{v:.{dec}f}%"
+    def _fmtf(v, dec=1):
+        return f"{v:.{dec}f}" if v is not None else "—"
+
+    ret1m  = _nonan(datos.get("ret_1m"))
+    ret3m  = _nonan(datos.get("ret_3m"))
+    ret6m  = _nonan(datos.get("ret_6m"))
+    rsi    = _nonan(datos.get("rsi_rs_semanal"))
+    rs_spy = _nonan(datos.get("rs_vs_spy"))
+    rs_pct = _nonan(datos.get("rs_percentil"))
+    dist52 = _nonan(datos.get("dist_max_52w"))
+    señal  = str(datos.get("señal") or "NEUTRAL")
+    score  = _nonan(datos.get("score"))
+    alin   = str(datos.get("alineacion_macro") or "")
+    razon  = str(datos.get("razon") or "")
+
+    col_a, col_b, col_c = st.columns(3)
+
+    with col_a:
+        st.markdown("**Retornos**")
+        for label, v in [("Ret 1M", ret1m), ("Ret 3M", ret3m), ("Ret 6M", ret6m)]:
+            if v is not None:
+                col_r = "#057a55" if v >= 0 else "#e02424"
+                st.markdown(
+                    f'{label}: <span style="color:{col_r};font-weight:600;">{v:+.1f}%</span>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(f"{label}: —")
+
+    with col_b:
+        st.markdown("**Momentum y Volatilidad**")
+        if rsi is not None:
+            rsi_col = "#e02424" if rsi < 40 else ("#057a55" if rsi <= 65 else "#c27803")
+            st.markdown(
+                f'RSI del RS: <span style="color:{rsi_col};font-weight:600;">{rsi:.0f}</span>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown("RSI del RS: —")
+        st.markdown(f"RS vs SPY: **{_fmtf(rs_spy, dec=3)}**")
+        st.markdown(f"Percentil RS: **{_fmtf(rs_pct, dec=0)}/100**")
+        if dist52 is not None:
+            st.markdown(f"Dist. máx 52W: **{dist52:.1f}%**")
+
+    with col_c:
+        st.markdown("**Señal y Contexto**")
+        bg_s, txt_s, brd_s = SEÑAL_BADGE_STYLE.get(señal, ("#f9fafb", "#6b7280", "#9ca3af"))
+        st.markdown(
+            f'<span style="background:{bg_s};color:{txt_s};border:2px solid {brd_s};'
+            f'padding:4px 14px;border-radius:12px;font-size:.9rem;font-weight:700;">{señal}</span>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(f"Score: **{_fmtf(score, dec=0)}/100**")
+        st.markdown(f"Alineación: **{'✅ Alineado' if alin == 'ALIGNED' else '⬜ Neutral'}**")
+        if razon:
+            st.caption(razon)
+
+
 def _render_empresa_detalle_sector(ticker: str) -> None:
-    """Muestra 3 columnas: Scores / Fundamentales / Técnico para una empresa."""
+    """Detalle completo en 4 columnas — idéntico al de la página EMPRESAS."""
     datos = _query_empresa_detalle_sector(ticker)
     if not datos:
         st.warning(f"Sin datos de detalle para {ticker}.")
         return
 
-    col_a, col_b, col_c = st.columns(3)
+    def _nonan(v):
+        return None if v is None or (isinstance(v, float) and pd.isna(v)) else float(v)
+    def _fmtv(v, dec=1):
+        return f"{float(v):.{dec}f}" if v is not None and not (isinstance(v, float) and pd.isna(v)) else "—"
+    def _fmtpct(v, dec=1):
+        vn = _nonan(v)
+        return f"{vn*100:.{dec}f}%" if vn is not None else "—"
 
+    col_a, col_b, col_c, col_d = st.columns(4)
+
+    # ── Col A — SCORES DEL SISTEMA ────────────────────────────────────────────
     with col_a:
-        st.markdown("**Scores**")
-        az  = str(datos.get("altman_zona") or "").lower()
-        az_fg, az_bg = ALTMAN_COLOR.get(az, ("#6b7280", "#f9fafb"))
+        st.markdown("**Scores del sistema**")
+        qs    = _nonan(datos.get("quality_score"))
+        vs    = _nonan(datos.get("value_score"))
+        mrank = datos.get("multifactor_rank")
+        salin = str(datos.get("sector_alineado") or "")
+
+        if qs is not None:
+            st.markdown(f"Calidad: **{qs:.0f}/100** {_estrellas(qs)}")
+        else:
+            st.markdown("Calidad: —")
+        if vs is not None:
+            st.markdown(f"Valor: **{vs:.0f}/100** {_estrellas(vs)}")
+        else:
+            st.markdown("Valor: —")
+        if mrank is not None and not (isinstance(mrank, float) and pd.isna(mrank)):
+            st.markdown(f"Ranking global: **#{int(float(mrank))}**")
+        if salin == "ALIGNED":
+            st.markdown(
+                '<span style="background:#f0fdf4;color:#057a55;padding:2px 10px;'
+                'border-radius:8px;font-size:.82rem;font-weight:600;">✅ ALIGNED</span>',
+                unsafe_allow_html=True,
+            )
+        elif salin:
+            st.markdown(
+                f'<span style="background:#f9fafb;color:#6b7280;padding:2px 10px;'
+                f'border-radius:8px;font-size:.82rem;">{salin}</span>',
+                unsafe_allow_html=True,
+            )
+
+    # ── Col B — RENTABILIDAD ──────────────────────────────────────────────────
+    with col_b:
+        st.markdown("**Rentabilidad**")
+        iq = _nonan(datos.get("income_quality"))
+        st.markdown(f"ROIC: **{_fmtpct(datos.get('roic'))}**")
+        st.markdown(f"ROE: **{_fmtpct(datos.get('roe'))}**")
+        st.markdown(f"Margen operativo: **{_fmtpct(datos.get('operating_profit_margin'))}**")
+        st.markdown(f"Margen neto: **{_fmtpct(datos.get('net_profit_margin'))}**")
+        st.markdown(f"FCF yield: **{_fmtpct(datos.get('fcf_yield'))}**")
+        st.markdown(f"Income quality: **{f'{iq:.2f}' if iq is not None else '—'}**")
+
+    # ── Col C — VALUACIÓN Y DEUDA ─────────────────────────────────────────────
+    with col_c:
+        st.markdown("**Valuación y Deuda**")
+        st.markdown(f"P/E: **{_fmtv(datos.get('price_to_earnings_ratio'))}x**")
+        st.markdown(f"P/FCF: **{_fmtv(datos.get('price_to_free_cash_flow_ratio'))}x**")
+        st.markdown(f"EV/EBITDA: **{_fmtv(datos.get('ev_to_ebitda'))}x**")
+        st.markdown(f"D/E: **{_fmtv(datos.get('debt_to_equity_ratio'), dec=2)}**")
+        st.markdown(f"Net Debt/EBITDA: **{_fmtv(datos.get('net_debt_to_ebitda'), dec=2)}**")
+        st.markdown(f"Cobertura intereses: **{_fmtv(datos.get('interest_coverage_ratio'))}x**")
+        st.markdown(f"Liquidez: **{_fmtv(datos.get('current_ratio'), dec=2)}**")
+
+    # ── Col D — TÉCNICO Y SALUD ───────────────────────────────────────────────
+    with col_d:
+        st.markdown("**Técnico y Salud**")
+        rsi_v  = _nonan(datos.get("rsi_14_semanal"))
+        ma200  = _nonan(datos.get("precio_vs_ma200"))
+        mom3   = _nonan(datos.get("momentum_3m"))
+        mom6   = _nonan(datos.get("momentum_6m"))
+        dy     = _nonan(datos.get("dividend_yield"))
+        az     = str(datos.get("altman_zona") or "").lower()
+        az_z   = _nonan(datos.get("altman_z_score"))
         piot_sc  = datos.get("piotroski_score")
-        piot_cat = str(datos.get("piotroski_categoria") or "").lower()
-        piot_col = PIOTROSKI_COLOR.get(piot_cat, "#6b7280")
-        piot_label = f"{int(float(piot_sc))}/9" if piot_sc is not None and not (isinstance(piot_sc, float) and pd.isna(piot_sc)) else "—"
-        st.markdown(f"Quality: **{_estrellas(datos.get('quality_score'))}**")
-        st.markdown(f"Value: **{_estrellas(datos.get('value_score'))}**")
+        piot_cat = str(datos.get("piotroski_categoria") or "")
+        roic_s   = datos.get("roic_signo")
+        deuda_s  = datos.get("deuda_signo")
+
+        if rsi_v is not None:
+            rsi_col = "#e02424" if rsi_v < 40 else ("#057a55" if rsi_v <= 65 else "#c27803")
+            st.markdown(
+                f'RSI semanal: <span style="color:{rsi_col};font-weight:600;">{rsi_v:.0f}</span>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown("RSI semanal: —")
+
+        if ma200 is not None:
+            ma_col = "#057a55" if ma200 >= 0 else "#e02424"
+            st.markdown(
+                f'vs MA200: <span style="color:{ma_col};font-weight:600;">{ma200:+.1f}%</span>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown("vs MA200: —")
+
+        st.markdown(f"Momentum 3M: **{f'{mom3:.1f}%' if mom3 is not None else '—'}**")
+        st.markdown(f"Momentum 6M: **{f'{mom6:.1f}%' if mom6 is not None else '—'}**")
+        if dy and dy > 0:
+            st.markdown(f"Dividendo: **{dy:.1%}**")
+        else:
+            st.markdown("Dividendo: Sin dividendo")
+
+        st.divider()
+
+        az_fg, az_bg = ALTMAN_COLOR.get(az, ("#6b7280", "#f9fafb"))
+        piot_v    = _nonan(piot_sc)
+        piot_col  = PIOTROSKI_COLOR.get(piot_cat.lower(), "#6b7280")
+        piot_label = f"{int(piot_v)}/9 {piot_cat}" if piot_v is not None else "—"
+        az_label   = f"{az_z:.2f} {az}" if az_z is not None else (az or "—")
+
         st.markdown(
-            f'Altman Z: <span style="background:{az_bg};color:{az_fg};padding:2px 8px;border-radius:8px;font-size:.8rem;">{az or "—"}</span>',
+            f'Altman Z: <span style="background:{az_bg};color:{az_fg};padding:1px 8px;'
+            f'border-radius:6px;font-size:.82rem;">{az_label}</span>',
             unsafe_allow_html=True,
         )
         st.markdown(
             f'Piotroski: <span style="color:{piot_col};font-weight:600;">{piot_label}</span>',
             unsafe_allow_html=True,
         )
-
-    with col_b:
-        st.markdown("**Fundamentales**")
-        roic      = datos.get("roic")
-        opm       = datos.get("operating_profit_margin")
-        ic        = datos.get("interest_coverage_ratio")
-        nd_ebitda = datos.get("net_debt_to_ebitda")
-        dy        = datos.get("dividend_yield")
-
-        def _pct(v):
-            return f"{float(v)*100:.1f}%" if v is not None and not (isinstance(v, float) and pd.isna(v)) else "—"
-        def _fmtn(v, dec=1):
-            return f"{float(v):.{dec}f}" if v is not None and not (isinstance(v, float) and pd.isna(v)) else "—"
-
-        st.markdown(f"ROIC: **{_pct(roic)}**")
-        st.markdown(f"Margen oper.: **{_pct(opm)}**")
-        st.markdown(f"Int. coverage: **{_fmtn(ic)}x**")
-        st.markdown(f"NetDebt/EBITDA: **{_fmtn(nd_ebitda)}**")
-        dy_v = float(dy) if dy is not None and not (isinstance(dy, float) and pd.isna(dy)) else None
-        if dy_v and dy_v > 0:
-            st.markdown(f"Dividendo: **{dy_v*100:.1f}%**")
-
-    with col_c:
-        st.markdown("**Técnico**")
-        rsi   = datos.get("rsi_14_semanal")
-        ma200 = datos.get("precio_vs_ma200")
-        mom3  = datos.get("momentum_3m")
-        mom6  = datos.get("momentum_6m")
-        salin = str(datos.get("sector_alineado") or "")
-
-        rsi_v = float(rsi) if rsi is not None and not (isinstance(rsi, float) and pd.isna(rsi)) else None
-        if rsi_v is not None:
-            rsi_col = "#e02424" if rsi_v < 40 else ("#057a55" if rsi_v <= 65 else "#c27803")
-            st.markdown(
-                f'RSI sem: <span style="color:{rsi_col};font-weight:600;">{rsi_v:.1f}</span>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown("RSI sem: —")
-
-        ma200_v = float(ma200) if ma200 is not None and not (isinstance(ma200, float) and pd.isna(ma200)) else None
-        st.markdown(f"vs MA200: **{f'{ma200_v:+.1f}%' if ma200_v is not None else '—'}**")
-        mom3_v = float(mom3) if mom3 is not None and not (isinstance(mom3, float) and pd.isna(mom3)) else None
-        mom6_v = float(mom6) if mom6 is not None and not (isinstance(mom6, float) and pd.isna(mom6)) else None
-        st.markdown(f"Mom 3M: **{f'{mom3_v:+.1f}%' if mom3_v is not None else '—'}**")
-        st.markdown(f"Mom 6M: **{f'{mom6_v:+.1f}%' if mom6_v is not None else '—'}**")
-        if salin == "ALIGNED":
-            st.markdown('<span style="background:#f0fdf4;color:#057a55;padding:2px 8px;border-radius:8px;font-size:.8rem;">✅ ALIGNED</span>', unsafe_allow_html=True)
-        elif salin:
-            st.markdown(f'<span style="background:#f9fafb;color:#6b7280;padding:2px 8px;border-radius:8px;font-size:.8rem;">{salin}</span>', unsafe_allow_html=True)
+        if roic_s == 1:
+            st.markdown('<span style="color:#057a55;">ROIC: ↑ mejorando ✓</span>', unsafe_allow_html=True)
+        elif roic_s == -1:
+            st.markdown('<span style="color:#e02424;">ROIC: ↓ deteriorando</span>', unsafe_allow_html=True)
+        if deuda_s == -1:
+            st.markdown('<span style="color:#057a55;">Deuda: ↓ bajando</span>', unsafe_allow_html=True)
+        elif deuda_s == 1:
+            st.markdown('<span style="color:#e02424;">Deuda: ↑ subiendo</span>', unsafe_allow_html=True)
 
 
 def _render_tabla_sector_empresas(df_top: pd.DataFrame, sector_etf: str) -> None:
@@ -864,11 +1029,10 @@ def _render_tabla_sector_empresas(df_top: pd.DataFrame, sector_etf: str) -> None
         r6.markdown(f'<span style="color:{roic_col};font-weight:700;">{roic_ico}</span>', unsafe_allow_html=True)
         r7.markdown(dy_f)
 
-        mostrar_detalle = st.checkbox(
-            f"Ver detalle de {ticker}",
-            key=f"det_sector_{sector_etf}_{ticker}",
-        )
-        if mostrar_detalle:
+        ss_key = f"show_{sector_etf}_{ticker}"
+        if st.button(f"Ver detalle de {ticker}", key=f"btn_{sector_etf}_{ticker}"):
+            st.session_state[ss_key] = not st.session_state.get(ss_key, False)
+        if st.session_state.get(ss_key, False):
             with st.container():
                 _render_empresa_detalle_sector(ticker)
             st.markdown("<hr style='margin:4px 0 8px;border-color:#f3f4f6;'>", unsafe_allow_html=True)
@@ -1277,20 +1441,12 @@ def pagina_sectores():
                             else:
                                 st.caption("Sin empresas en selección para esta industria.")
                     else:
-                        # Sin mapa → análisis extendido del ETF
-                        mostrar_analisis = st.checkbox(
-                            f"Ver análisis de {etf_ticker}",
-                            key=f"tematico_{etf_ticker}_analisis",
-                        )
-                        if mostrar_analisis:
-                            a1, a2, a3, a4 = st.columns(4)
-                            a1.metric("Ret 3M", f"{ret_v:+.1f}%" if ret_v is not None else "—")
-                            a2.metric("Ret 6M", f"{ret6m_v:+.1f}%" if ret6m_v is not None else "—")
-                            a3.metric("RSI RS", rsi_f)
-                            a4.metric("Score", score_f)
-                            st.markdown(f"**Alineación macro:** {'✅ Alineado' if alin == 'ALIGNED' else '⬜ Neutral'}")
-                            if razon:
-                                st.caption(razon)
+                        # Sin mapa de industria → panel extendido del ETF
+                        ss_etf_key = f"show_etf_{etf_ticker}"
+                        if st.button(f"Ver análisis de {etf_ticker}", key=f"btn_etf_det_{etf_ticker}"):
+                            st.session_state[ss_etf_key] = not st.session_state.get(ss_etf_key, False)
+                        if st.session_state.get(ss_etf_key, False):
+                            _render_etf_detalle_tematico(etf_ticker)
 
                 st.markdown("---")
 
