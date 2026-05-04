@@ -229,7 +229,8 @@ SELECT e.quality_score, e.value_score,
        k.ev_to_ebitda,
        k.net_debt_to_ebitda,
        k.income_quality,
-       k.fcf_yield
+       k.fcf_yield,
+       k.market_cap
 FROM seleccion.enriquecimiento e
 LEFT JOIN ingest.ratios_ttm r
     ON r.ticker = e.ticker
