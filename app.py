@@ -742,7 +742,17 @@ def _query_empresa_detalle_sector(ticker: str) -> dict:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(SQL_EMPRESA_DETALLE_SECTOR, (ticker,))
             row = cur.fetchone()
-    return dict(row) if row else {}
+    # Convertir Decimal/tipos especiales a tipos nativos para cache de Streamlit
+    if not row:
+        return {}
+    import decimal
+    result = {}
+    for k, v in row.items():
+        if isinstance(v, decimal.Decimal):
+            result[k] = float(v)
+        else:
+            result[k] = v
+    return result
 
 
 @st.cache_data(ttl=3600)
