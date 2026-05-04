@@ -2150,34 +2150,290 @@ def _render_vista_tecnica(df: pd.DataFrame):
             st.caption(f"{sector_s} · {ind} · {cap}")
 
 
+ESTRATEGIAS_DEF = [
+    {
+        "id": "dividendos",
+        "nombre": "Dividendos",
+        "icono": "💰",
+        "objetivo": "Ingreso pasivo estable — empresas que pagan dividendo sostenible con balance sólido",
+        "instrumento": "Stock directo",
+        "tabla": "estrategias.dividendos",
+        "metrica_clave": "dividend_yield",
+        "metrica_label": "Yield",
+        "alineacion": {
+            "SLOWDOWN":    ("🟢", "Alineado"),
+            "CONTRACTION": ("🟢", "Alineado"),
+            "EXPANSION":   ("🟡", "Parcialmente alineado"),
+            "RECOVERY":    ("🟡", "Parcialmente alineado"),
+        },
+    },
+    {
+        "id": "buy_hold",
+        "nombre": "Buy & Hold",
+        "icono": "📈",
+        "objetivo": "Comprar las mejores empresas del universo y mantener largo plazo",
+        "instrumento": "Stock directo",
+        "tabla": "estrategias.buy_hold",
+        "metrica_clave": "quality_score",
+        "metrica_label": "Quality",
+        "alineacion": {
+            "SLOWDOWN":    ("🟢", "Alineado"),
+            "CONTRACTION": ("🟡", "Parcialmente alineado"),
+            "EXPANSION":   ("🟢", "Alineado"),
+            "RECOVERY":    ("🟢", "Alineado"),
+        },
+    },
+    {
+        "id": "cash_flow",
+        "nombre": "Cash Flow",
+        "icono": "💵",
+        "objetivo": "Generar ingreso mensual vendiendo opciones put sobre empresas de calidad",
+        "instrumento": "Cash Secured Put / Bull Put Spread",
+        "tabla": "estrategias.cash_flow",
+        "metrica_clave": "score_conviccion",
+        "metrica_label": "Convicción",
+        "alineacion": {
+            "SLOWDOWN":    ("🟢", "Alineado"),
+            "CONTRACTION": ("🟢", "Alineado"),
+            "EXPANSION":   ("🟡", "Parcialmente alineado"),
+            "RECOVERY":    ("🟡", "Parcialmente alineado"),
+        },
+    },
+    {
+        "id": "the_wheel",
+        "nombre": "The Wheel",
+        "icono": "🔄",
+        "objetivo": "Ciclo continuo de primas — CSP hasta asignación, luego Covered Call",
+        "instrumento": "CSP → Stock → Covered Call",
+        "tabla": "estrategias.the_wheel",
+        "metrica_clave": "quality_score",
+        "metrica_label": "Quality",
+        "alineacion": {
+            "SLOWDOWN":    ("🟡", "Parcialmente alineado"),
+            "CONTRACTION": ("🔴", "No alineado"),
+            "EXPANSION":   ("🟢", "Alineado"),
+            "RECOVERY":    ("🟢", "Alineado"),
+        },
+    },
+    {
+        "id": "crecimiento",
+        "nombre": "Crecimiento",
+        "icono": "🚀",
+        "objetivo": "Momentum sostenido con fundamentales sólidos — horizonte 6 a 18 meses",
+        "instrumento": "Stock directo",
+        "tabla": "estrategias.crecimiento",
+        "metrica_clave": "momentum_6m",
+        "metrica_label": "Momentum 6M",
+        "alineacion": {
+            "SLOWDOWN":    ("🔴", "No alineado"),
+            "CONTRACTION": ("🔴", "No alineado"),
+            "EXPANSION":   ("🟢", "Alineado"),
+            "RECOVERY":    ("🟢", "Alineado"),
+        },
+    },
+]
+
+MACRO_MENSAJE_EST = {
+    "SLOWDOWN":    "Favorece ingreso y calidad defensiva",
+    "CONTRACTION": "Máxima cautela — solo ingreso",
+    "EXPANSION":   "Favorece crecimiento y momentum",
+    "RECOVERY":    "Selección activa de calidad",
+}
+
+
+@st.cache_data(ttl=3600)
+def _get_estrategia_data(tabla: str) -> list:
+    sql = f"""
+        SELECT * FROM {tabla}
+        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM {tabla})
+        ORDER BY ranking
+    """
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+    import decimal
+    result = []
+    for row in rows:
+        d = {}
+        for k, v in row.items():
+            d[k] = float(v) if isinstance(v, decimal.Decimal) else v
+        result.append(d)
+    return result
+
+
+def _fmt_metrica(val, metrica_clave: str) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "—"
+    v = float(val)
+    if metrica_clave == "dividend_yield":
+        return f"{v:.1%}"
+    if metrica_clave == "quality_score":
+        return f"{v:.0f}/100"
+    if metrica_clave == "score_conviccion":
+        return f"{v:.0f}/100"
+    if metrica_clave == "momentum_6m":
+        return f"{v:+.1f}%"
+    return str(val)
+
+
+def _render_opciones_sugeridas(empresa: dict) -> None:
+    """Panel de opciones put sugeridas para Cash Flow y The Wheel."""
+    strike = empresa.get("put_strike")
+    if strike is None or (isinstance(strike, float) and pd.isna(strike)):
+        return
+    st.divider()
+    st.markdown("**Opciones sugeridas:**")
+    oc1, oc2, oc3, oc4, oc5 = st.columns(5)
+    oc1.metric("Strike", f"${float(strike):.2f}")
+    dte = empresa.get("put_dte")
+    oc2.metric("DTE", f"{int(float(dte))} días" if dte is not None and not pd.isna(dte) else "—")
+    delta = empresa.get("put_delta")
+    oc3.metric("Delta", f"{float(delta):.2f}" if delta is not None and not pd.isna(delta) else "—")
+    theta = empresa.get("put_theta")
+    oc4.metric("Theta", f"${float(theta):.4f}/día" if theta is not None and not pd.isna(theta) else "—")
+    iv_nivel = empresa.get("nivel_iv") or "—"
+    iv_col = IV_COLOR.get(str(iv_nivel).lower(), "#6b7280")
+    oc5.markdown(
+        f'IV: <span style="color:{iv_col};font-weight:700;font-size:1.1rem;">'
+        f'{str(iv_nivel).upper()}</span>',
+        unsafe_allow_html=True,
+    )
+
+
 def pagina_estrategia():
-    st.title("Estrategia")
+    st.title("🎯 Estrategia")
 
-    # Leer datos macro para el banner
+    # ── Estado macro ──────────────────────────────────────────────────────────
     df_macro = query(SQL_MACRO_ESTADO)
-    macro_row = df_macro.iloc[0].to_dict() if not df_macro.empty else None
+    estado_macro = None
+    score_riesgo = None
+    if not df_macro.empty:
+        m = df_macro.iloc[0]
+        estado_macro = str(m.get("estado_macro") or "").upper()
+        score_riesgo = m.get("score_riesgo")
 
-    # Leer cards (agente.top + enriquecimiento)
-    df_cards = query(SQL_ESTRATEGIA_CARDS)
-    for col_num in ["quality_score", "value_score", "score_conviccion", "altman_z_score",
-                    "rsi_14_semanal", "precio_vs_ma200", "volume_ratio_20d", "momentum_3m"]:
-        if col_num in df_cards.columns:
-            df_cards[col_num] = pd.to_numeric(df_cards[col_num], errors="coerce")
-    for col_int in ["piotroski_score", "rank_conviccion", "roic_signo", "deuda_signo"]:
-        if col_int in df_cards.columns:
-            df_cards[col_int] = pd.to_numeric(df_cards[col_int], errors="coerce")
+    # ── Banner macro ──────────────────────────────────────────────────────────
+    with st.container(border=True):
+        bc1, bc2 = st.columns([1, 2])
+        with bc1:
+            if estado_macro:
+                MACRO_COLOR = {
+                    "EXPANSION":   ("#057a55", "#f0fdf4"),
+                    "SLOWDOWN":    ("#c27803", "#fefce8"),
+                    "CONTRACTION": ("#e02424", "#fef2f2"),
+                    "RECOVERY":    ("#1d4ed8", "#eff6ff"),
+                }
+                fg, bg = MACRO_COLOR.get(estado_macro, ("#6b7280", "#f9fafb"))
+                st.markdown(
+                    f'<div style="font-size:1.6rem;font-weight:800;color:{fg};">'
+                    f'{estado_macro}</div>',
+                    unsafe_allow_html=True,
+                )
+                if score_riesgo is not None and not pd.isna(score_riesgo):
+                    st.caption(f"Score riesgo: {float(score_riesgo):.0f}/100")
+            else:
+                st.markdown("**Sin datos macro**")
+        with bc2:
+            msg = MACRO_MENSAJE_EST.get(estado_macro, "")
+            if msg:
+                st.markdown(f"### {msg}")
 
-    # Leer datos para vista técnica
-    df_tecnica = query(SQL_TOP_SELECCION)
+    st.divider()
 
-    # Tabs
-    tab_simple, tab_tecnica = st.tabs(["Vista simple", "Vista técnica"])
+    # ── Una sección por estrategia ────────────────────────────────────────────
+    for est in ESTRATEGIAS_DEF:
+        eid       = est["id"]
+        tabla     = est["tabla"]
+        icono     = est["icono"]
+        nombre    = est["nombre"]
+        objetivo  = est["objetivo"]
+        inst      = est["instrumento"]
+        metrica   = est["metrica_clave"]
+        m_label   = est["metrica_label"]
+        alin_map  = est["alineacion"]
+        usa_opts  = eid in ("cash_flow", "the_wheel")
 
-    with tab_simple:
-        _render_vista_simple(df_cards, macro_row)
+        with st.container(border=True):
+            hc1, hc2 = st.columns([7, 3])
+            with hc1:
+                st.markdown(
+                    f'<div style="font-size:1.2rem;font-weight:800;">{icono} {nombre}</div>'
+                    f'<div style="font-size:.85rem;color:#6b7280;margin-top:2px;">{objetivo}</div>'
+                    f'<div style="font-size:.78rem;color:#9ca3af;margin-top:4px;">'
+                    f'Instrumento: {inst}</div>',
+                    unsafe_allow_html=True,
+                )
+            with hc2:
+                emoji_a, texto_a = alin_map.get(estado_macro, ("⬜", "Sin datos macro"))
+                if emoji_a == "🟢":
+                    st.success(f"{emoji_a} {texto_a}")
+                elif emoji_a == "🟡":
+                    st.warning(f"{emoji_a} {texto_a}")
+                elif emoji_a == "🔴":
+                    st.error(f"{emoji_a} {texto_a}")
+                else:
+                    st.info(texto_a)
 
-    with tab_tecnica:
-        _render_vista_tecnica(df_tecnica)
+            with st.expander(f"Ver empresas de {nombre}"):
+                empresas = _get_estrategia_data(tabla)
+                n = len(empresas)
+                st.caption(f"{n} empresa{'s' if n != 1 else ''} seleccionada{'s' if n != 1 else ''}")
+
+                if not empresas:
+                    st.info("Sin datos. Corré calcular_estrategias.py primero.")
+                else:
+                    # Encabezado
+                    eh0, eh1, eh2, eh3, eh4, eh5, eh6 = st.columns([0.8, 3.5, 2, 1.8, 2, 2, 1])
+                    for col, txt in [(eh0, "#"), (eh1, "Empresa"), (eh2, "Sector"),
+                                      (eh3, "Quality"), (eh4, "Altman Z"),
+                                      (eh5, m_label), (eh6, "")]:
+                        col.markdown(f"**{txt}**")
+                    st.markdown(
+                        "<hr style='margin:4px 0 6px;border-color:#e5e7eb;'>",
+                        unsafe_allow_html=True,
+                    )
+
+                    for emp in empresas:
+                        ticker   = str(emp.get("ticker") or "")
+                        company  = str(emp.get("companyname") or "")[:28]
+                        sector   = str(emp.get("sector") or "—")
+                        ranking  = emp.get("ranking")
+                        qs       = emp.get("quality_score")
+                        az       = str(emp.get("altman_zona") or "").lower()
+                        metval   = emp.get(metrica)
+
+                        rank_f  = f"#{int(float(ranking))}" if ranking is not None and not pd.isna(ranking) else "—"
+                        az_fg, az_bg = ALTMAN_COLOR.get(az, ("#6b7280", "#f9fafb"))
+                        metval_f = _fmt_metrica(metval, metrica)
+
+                        rc0, rc1, rc2, rc3, rc4, rc5, rc6 = st.columns([0.8, 3.5, 2, 1.8, 2, 2, 1])
+                        rc0.markdown(f'<span style="color:#9ca3af;font-size:.85rem;">{rank_f}</span>', unsafe_allow_html=True)
+                        rc1.markdown(f"**{ticker}** {company}")
+                        rc2.markdown(f'<span style="font-size:.8rem;color:#6b7280;">{sector[:20]}</span>', unsafe_allow_html=True)
+                        rc3.markdown(_estrellas(qs))
+                        rc4.markdown(
+                            f'<span style="background:{az_bg};color:{az_fg};padding:1px 8px;'
+                            f'border-radius:8px;font-size:.8rem;">{az or "—"}</span>',
+                            unsafe_allow_html=True,
+                        )
+                        rc5.markdown(f"**{metval_f}**")
+
+                        ss_key = f"show_{eid}_{ticker}"
+                        if rc6.button("📊", key=f"btn_{eid}_{ticker}", help=f"Detalle de {ticker}"):
+                            st.session_state[ss_key] = not st.session_state.get(ss_key, False)
+
+                        if st.session_state.get(ss_key, False):
+                            with st.container():
+                                _render_empresa_detalle_sector(ticker)
+                                if usa_opts:
+                                    _render_opciones_sugeridas(emp)
+                            st.markdown(
+                                "<hr style='margin:4px 0 8px;border-color:#f3f4f6;'>",
+                                unsafe_allow_html=True,
+                            )
+
+        st.divider()
 
 
 # ── Página 5: ESTRATEGIA OPCIONES ────────────────────────────────────────────
@@ -3382,20 +3638,19 @@ def pagina_track_record():
 # ── Navegación ───────────────────────────────────────────────────────────────
 
 PAGINAS = {
-    "💬 Asistente":          pagina_asistente,
-    "📊 Cómo funciona":      pagina_como_funciona,
-    "🌍 Macro":              pagina_macro,
-    "🔄 SECTORES Y ETF":     pagina_sectores,
-    "🏢 Empresas":           pagina_micro,
-    "🎯 Estrategia":         pagina_estrategia,
-    "📈 Estrategia Opciones": pagina_opciones,
-    "📊 Track Record":       pagina_track_record,
+    "💬 Asistente":      pagina_asistente,
+    "📊 Cómo funciona":  pagina_como_funciona,
+    "🌍 Macro":          pagina_macro,
+    "🔄 SECTORES Y ETF": pagina_sectores,
+    "🏢 Empresas":       pagina_micro,
+    "🎯 Estrategia":     pagina_estrategia,
+    "📊 Track Record":   pagina_track_record,
 }
 
 GRUPOS_SIDEBAR = [
     ["💬 Asistente"],
     ["📊 Cómo funciona"],
-    ["🌍 Macro", "🔄 SECTORES Y ETF", "🏢 Empresas", "🎯 Estrategia", "📈 Estrategia Opciones"],
+    ["🌍 Macro", "🔄 SECTORES Y ETF", "🏢 Empresas", "🎯 Estrategia"],
     ["📊 Track Record"],
 ]
 
