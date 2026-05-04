@@ -848,7 +848,6 @@ def _render_etf_detalle_tematico(etf_ticker: str) -> None:
 def _render_empresa_detalle_sector(ticker: str) -> None:
     """Detalle completo en 4 columnas — idéntico al de la página EMPRESAS."""
     datos = _query_empresa_detalle_sector(ticker)
-    st.write("DEBUG - datos recibidos:", datos if datos else "SIN DATOS")
     if not datos:
         st.warning(f"Sin datos de detalle para {ticker}.")
         return
