@@ -1,0 +1,6 @@
+2026-05-06 21:43:26,964 | INFO | Tickers a procesar: 189
+2026-05-06 21:46:23,454 | INFO | Progreso: 50/189 — OK=45 SIN_DATOS=5 FAIL=0 PUTS=242 CALLS=381
+2026-05-06 21:47:28,236 | ERROR | [GD/call] error de red (intento 1): ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+2026-05-06 21:49:53,652 | INFO | Progreso: 100/189 — OK=90 SIN_DATOS=10 FAIL=0 PUTS=382 CALLS=595
+2026-05-06 21:52:46,674 | INFO | Progreso: 150/189 — OK=136 SIN_DATOS=14 FAIL=0 PUTS=616 CALLS=962
+2026-05-06 21:54:36,326 | INFO | Fin — total=189 ok=171 sin_datos=18 fail=0 puts=744 calls=1162 prom=11.1

@@ -13,7 +13,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-
 def main():
     host     = os.getenv("POSTGRES_HOST")
     user     = os.getenv("POSTGRES_USER")
@@ -21,10 +20,10 @@ def main():
     dbname   = os.getenv("POSTGRES_DB")
     port     = os.getenv("POSTGRES_PORT", "5432")
 
-    conn_string = (
-        f"postgresql://{user}:{password}@{host}:{port}"
-        f"/{dbname}?sslmode=require&channel_binding=require"
-    )
+    if "neon.tech" in host:
+        conn_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}?sslmode=require&channel_binding=require"
+    else:
+        conn_string = f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
 
     sql_path = os.path.join(
         os.path.dirname(__file__),
@@ -51,7 +50,6 @@ def main():
         print("=== RESUMEN ===")
         print("Dividendos, Buy&Hold, Cash Flow, The Wheel, Crecimiento")
         print("Correr: SELECT COUNT(*) FROM estrategias.dividendos;")
-
 
 if __name__ == "__main__":
     main()
