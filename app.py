@@ -2912,31 +2912,50 @@ con prima positiva — fundamentadas en datos, no en intuición.
 # ── Página 6: ASISTENTE ──────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """
-Sos un asistente especializado en análisis cuantitativo de inversiones. Trabajás con un sistema
-multifactor que analiza más de 3.000 empresas USA y 75 ETFs en 5 capas:
+Sos un asesor de inversiones cuantitativo con dos roles simultáneos: analista de datos y psicólogo inversor.
+
+ROL 1 — ANALISTA CUANTITATIVO:
+Trabajás con un sistema que analiza 3.000+ empresas USA y 75 ETFs usando modelos matemáticos, regresiones lineales
+y análisis técnico masivo. El sistema tiene 5 capas:
 MACRO → SECTORES → EMPRESAS → ESTRATEGIA → OPCIONES.
 
-En cada consulta recibís:
-1. El estado actual del sistema (contexto fijo)
-2. Datos específicos de las empresas o ETFs que el usuario mencionó (contexto dinámico)
+Siempre fundamentás con datos concretos del sistema.
+NUNCA inventés datos — si no tenés el dato, decilo.
+Citá siempre la fuente: [Sistema], [DB], [Macro].
 
-Usá SIEMPRE los datos del sistema para fundamentar.
+ROL 2 — PSICÓLOGO INVERSOR:
+Ayudás al inversor a tomar decisiones racionales evitando sesgos emocionales comunes.
 
-Podés ayudar con:
-- Estado general del mercado y del sistema
-- Análisis de empresas específicas (datos de la DB)
-- Análisis de ETFs y commodities
-- Explicación de estrategias de opciones
-- Interpretación de métricas del sistema
+Detectás estas emociones en las preguntas:
+- PÁNICO: "cayó mucho", "vendo todo", "me asusté"
+- FOMO: "subió mucho", "me perdí la suba", "entro ahora"
+- AVERSIÓN A PÉRDIDA: "perdí plata", "estoy en rojo"
+- SOBRECONFIANZA: "siempre gano con esto", "es seguro"
+- ANSIEDAD: "no sé qué hacer", "estoy nervioso"
+
+Cuando detectás una emoción, el formato es:
+1. Datos objetivos del sistema sobre esa empresa/mercado
+2. Contexto racional de la situación
+3. Una pregunta reflexiva para el inversor
+
+Ejemplos:
+Usuario: "El mercado cayó 3%, ¿vendo todo?"
+Respuesta: "Los datos del sistema no cambiaron con esta caída. MO mantiene score 97, Altman safe, ROIC mejorando.
+Las caídas de corto plazo no modifican los fundamentales. ¿Cambió algo en tu tesis de inversión original sobre esta empresa?"
+
+Usuario: "NVDA subió 30%, ¿entro ahora?"
+Respuesta: "NVDA no está en el top del sistema actual. El RSI semanal está en zona de sobrecompra.
+Entrar después de una suba del 30% implica comprar momentum sin margen de seguridad.
+¿Cuál es tu horizonte de inversión y tu tolerancia al riesgo?"
 
 Reglas estrictas:
-- Solo usá datos que estén explícitamente en el contexto
-- Si no tenés datos de una empresa, decilo claramente
-- Siempre aclará que no es asesoramiento financiero
-- Sé conciso — máximo 4 párrafos
-- Usá los datos reales del sistema para fundamentar
-- No inventes datos ni señales
-- Si el usuario pregunta algo fuera del scope de inversiones, redirigilo amablemente
+- Máximo 4 párrafos por respuesta
+- Siempre citá la fuente de los datos
+- Nunca des recomendaciones de compra/venta explícitas
+- Siempre recordá que no es asesoramiento financiero
+- Si la pregunta está fuera del scope, redirigí amablemente
+- Usá lenguaje claro — evitá jerga innecesaria
+- Cuando el inversor muestra miedo, sé empático primero
 """
 
 
@@ -2993,6 +3012,44 @@ def leer_contexto_sistema() -> str:
             """)
             diag_tec = cur.fetchone() or {}
 
+            cur.execute("""
+                SELECT * FROM (
+                    SELECT 'dividendos' AS estrategia, ticker, ranking
+                    FROM estrategias.dividendos
+                    WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.dividendos)
+                    ORDER BY ranking LIMIT 3
+                ) t1
+                UNION ALL
+                SELECT * FROM (
+                    SELECT 'buy_hold', ticker, ranking
+                    FROM estrategias.buy_hold
+                    WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.buy_hold)
+                    ORDER BY ranking LIMIT 3
+                ) t2
+                UNION ALL
+                SELECT * FROM (
+                    SELECT 'cash_flow', ticker, ranking
+                    FROM estrategias.cash_flow
+                    WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.cash_flow)
+                    ORDER BY ranking LIMIT 3
+                ) t3
+                UNION ALL
+                SELECT * FROM (
+                    SELECT 'the_wheel', ticker, ranking
+                    FROM estrategias.the_wheel
+                    WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.the_wheel)
+                    ORDER BY ranking LIMIT 3
+                ) t4
+                UNION ALL
+                SELECT * FROM (
+                    SELECT 'crecimiento', ticker, ranking
+                    FROM estrategias.crecimiento
+                    WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.crecimiento)
+                    ORDER BY ranking LIMIT 3
+                ) t5
+            """)
+            estrategias_rows = cur.fetchall() or []
+
     # Armar tabla top 5
     lineas_top5 = []
     for r in top5:
@@ -3004,6 +3061,13 @@ def leer_contexto_sistema() -> str:
             f"alineado: {r.get('sector_alineado','—')}"
         )
     tabla_top5 = "\n".join(lineas_top5) if lineas_top5 else "  Sin datos"
+
+    # Armar resumen de estrategias
+    strat_map: dict[str, list[str]] = {}
+    for r in estrategias_rows:
+        strat_map.setdefault(r['estrategia'], []).append(r['ticker'])
+    def _top3(key):
+        return ", ".join(strat_map.get(key, [])) or "—"
 
     return f"""\
 ESTADO DEL SISTEMA — {date.today().strftime('%d/%m/%Y')}
@@ -3028,6 +3092,13 @@ SEÑALES ACTIVAS:
 
 TOP 5 EMPRESAS POR CONVICCIÓN:
 {tabla_top5}
+
+ESTRATEGIAS ACTIVAS:
+  Dividendos top 3:  {_top3('dividendos')}
+  Buy & Hold top 3:  {_top3('buy_hold')}
+  Cash Flow top 3:   {_top3('cash_flow')}
+  The Wheel top 3:   {_top3('the_wheel')}
+  Crecimiento top 3: {_top3('crecimiento')}
 """
 
 
@@ -3148,12 +3219,68 @@ def get_opciones_data(conn, ticker: str) -> list[dict]:
         return [dict(r) for r in cur.fetchall()]
 
 
+def get_estrategia_empresa(conn, ticker: str):
+    for tabla in ['cash_flow', 'the_wheel', 'dividendos', 'buy_hold', 'crecimiento']:
+        sql = f"""
+            SELECT '{tabla}' AS estrategia, ranking
+            FROM estrategias.{tabla}
+            WHERE ticker = %s
+              AND snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.{tabla})
+        """
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (ticker,))
+            row = cur.fetchone()
+            if row:
+                return dict(row)
+    return None
+
+
+@st.cache_data(ttl=3600)
+def get_tickers_validos(_conn):
+    sql = """
+        SELECT DISTINCT ticker
+        FROM seleccion.enriquecimiento
+        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.enriquecimiento)
+        UNION
+        SELECT DISTINCT ticker FROM etf.signal
+        WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM etf.signal)
+        UNION
+        SELECT DISTINCT ticker
+        FROM universos.all_usa_common_equity_base
+        WHERE is_actively_trading = true
+    """
+    with _conn.cursor() as cur:
+        cur.execute(sql)
+        return {row[0] for row in cur.fetchall()}
+
+
 def enriquecer_contexto_con_ticker(conn, pregunta: str, contexto_base: str) -> str:
     import re
-    tickers_mencionados = re.findall(r'\b[A-Z]{2,5}\b', pregunta)
+
+    PALABRAS_IGNORAR = {
+        'USD', 'ETF', 'USA', 'RSI', 'VIX', 'FCF', 'TTM',
+        'CEO', 'IPO', 'EPS', 'ROE', 'ROA', 'GDP', 'FED',
+        'OTM', 'ATM', 'ITM', 'CSP', 'DTE', 'IV', 'IVR',
+        'AI', 'ML', 'API', 'SQL', 'DB', 'OK', 'NO', 'SI',
+        'PUT', 'CALL', 'BUY', 'SELL', 'HOLD', 'STOP',
+        'NYSE', 'NASDAQ', 'SPY', 'QQQ', 'DIA', 'IWM',
+        'ROIC', 'EBITDA', 'EV', 'THE', 'AND', 'FOR',
+        'ARE', 'BUT', 'NOT', 'YOU', 'ALL', 'CAN', 'HER',
+        'HIM', 'HIS', 'HOW', 'ITS', 'MAY', 'NEW', 'NOW',
+        'OLD', 'OUR', 'OUT', 'OWN', 'SAY', 'SHE', 'TOO',
+        'USE', 'WAS', 'WAY', 'WHO', 'WIN', 'YET', 'LOW',
+        'HIGH', 'MAX', 'MIN',
+    }
+
+    posibles = re.findall(r'\b[A-Z]{2,5}\b', pregunta)
+    tickers_candidatos = [t for t in posibles if t not in PALABRAS_IGNORAR]
+
+    tickers_validos_db = get_tickers_validos(conn)
+    tickers_a_procesar = [t for t in tickers_candidatos if t in tickers_validos_db]
+    tickers_a_procesar = tickers_a_procesar[:3]
 
     contexto_extra = ""
-    for ticker in tickers_mencionados:
+    for ticker in tickers_a_procesar:
         # Intentar como empresa
         data = get_empresa_data(conn, ticker)
         if data:
@@ -3191,6 +3318,14 @@ DATOS DEL SISTEMA PARA {ticker}{' (fuera del universo filtrado — solo fundamen
                     f"  Contratos disponibles: {len(opciones)} | "
                     f"Mejor theta: {opciones[0].get('theta')}\n"
                 )
+            estrategia_info = get_estrategia_empresa(conn, ticker)
+            if estrategia_info:
+                contexto_extra += (
+                    f"  Estrategia asignada: {estrategia_info['estrategia']} "
+                    f"(ranking #{estrategia_info['ranking']} en esa estrategia)\n"
+                )
+            else:
+                contexto_extra += "  No está en ninguna estrategia activa\n"
             continue
 
         # Intentar como ETF
