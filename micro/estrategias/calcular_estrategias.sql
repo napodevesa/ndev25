@@ -149,6 +149,7 @@ LEFT JOIN ingest.keymetrics k
     AND k.fecha_consulta = (SELECT MAX(fecha_consulta) FROM ingest.keymetrics)
 WHERE e.snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.enriquecimiento)
   AND r.dividend_yield > 0.02
+  AND r.dividend_yield <= 0.11
   AND e.altman_zona = 'safe'
   AND e.piotroski_score >= 5
   AND r.debt_to_equity_ratio < 1.0
