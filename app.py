@@ -1483,15 +1483,6 @@ SIGNO_LABEL = {1: "↑", 0: "→", -1: "↓"}
 def pagina_micro():
     st.title("🏢 Empresas")
 
-    st.info("""
-**786 empresas seleccionadas** de un universo inicial de 3.027 compañías USA.
-
-Para estar en este universo cada empresa debe cumplir:
-ROIC > 4% · Deuda/EBITDA < 3 · D/E < 0.8 · FCF > 0
-
-Estas son las empresas aptas para operar con estrategias de inversión y estrategias de opciones.
-""")
-
     df = query(SQL_MICRO)
 
     if df.empty:
@@ -1521,6 +1512,13 @@ Estas son las empresas aptas para operar con estrategias de inversión y estrate
     n_con_div     = int((df["dividend_yield"] > 0).sum())
     n_roic_mejora = int((df["roic_signo"] == 1).sum())
     n_aligned     = int((df["sector_alineado"] == "ALIGNED").sum())
+
+    st.info(f"""
+**{n_total} empresas seleccionadas** de un universo inicial de 3.027 compañías USA.
+
+Solo las empresas que superan nuestro control de calidad y salud financiera forman parte \
+de este universo — aptas para operar con estrategias de inversión y opciones.
+""")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total", n_total)
