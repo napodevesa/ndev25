@@ -1481,7 +1481,16 @@ SIGNO_LABEL = {1: "↑", 0: "→", -1: "↓"}
 
 
 def pagina_micro():
-    st.title("Empresas")
+    st.title("🏢 Empresas")
+
+    st.info("""
+**786 empresas seleccionadas** de un universo inicial de 3.027 compañías USA.
+
+Para estar en este universo cada empresa debe cumplir:
+ROIC > 4% · Deuda/EBITDA < 3 · D/E < 0.8 · FCF > 0
+
+Estas son las empresas aptas para operar con estrategias de inversión y estrategias de opciones.
+""")
 
     df = query(SQL_MICRO)
 
@@ -1510,15 +1519,14 @@ def pagina_micro():
     # ── Métricas resumen ─────────────────────────────────────────────────────
     n_total       = len(df)
     n_con_div     = int((df["dividend_yield"] > 0).sum())
-    pct_div       = round(n_con_div / n_total * 100) if n_total else 0
-    n_aligned     = int((df["sector_alineado"] == "ALIGNED").sum())
     n_roic_mejora = int((df["roic_signo"] == 1).sum())
+    n_aligned     = int((df["sector_alineado"] == "ALIGNED").sum())
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Empresas", n_total)
-    c2.metric("Con dividendo", f"{n_con_div} ({pct_div}%)")
+    c1.metric("Total", n_total)
+    c2.metric("Con dividendo", n_con_div)
     c3.metric("ROIC mejorando", n_roic_mejora)
-    c4.metric("Sector ALIGNED", n_aligned)
+    c4.metric("Sector alineado", n_aligned)
 
     st.divider()
 
