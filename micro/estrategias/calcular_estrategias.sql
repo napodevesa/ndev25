@@ -2,105 +2,12 @@
 -- calcular_estrategias.sql
 -- Pobla las 5 tablas del schema estrategias desde las tablas fuente.
 -- snapshot_date = primer día del mes en curso (dinámico).
+-- Jerarquía de exclusividad: Cash Flow > The Wheel > Dividendos > Buy&Hold > Crecimiento
 -- Uso: psql "postgresql://..." -f calcular_estrategias.sql
 -- =============================================================================
 
 
--- ── 1. DIVIDENDOS ─────────────────────────────────────────────────────────────
-TRUNCATE TABLE estrategias.dividendos;
-
-INSERT INTO estrategias.dividendos
-SELECT DISTINCT ON (e.ticker)
-    e.ticker,
-    DATE_TRUNC('month', CURRENT_DATE)::DATE AS snapshot_date,
-    b.companyname,
-    e.sector,
-    e.market_cap_tier,
-    e.quality_score,
-    e.value_score,
-    e.altman_z_score,
-    e.altman_zona,
-    e.piotroski_score,
-    e.roic_signo,
-    e.deuda_signo,
-    e.rsi_14_semanal,
-    e.precio_vs_ma200,
-    e.sector_alineado,
-    r.dividend_yield,
-    r.debt_to_equity_ratio,
-    r.interest_coverage_ratio,
-    r.operating_profit_margin,
-    k.roic,
-    k.net_debt_to_ebitda,
-    e.momentum_3m,
-    e.momentum_6m,
-    ROW_NUMBER() OVER (ORDER BY r.dividend_yield DESC) AS ranking
-FROM seleccion.enriquecimiento e
-LEFT JOIN universos.all_usa_common_equity_base b ON b.ticker = e.ticker
-LEFT JOIN ingest.ratios_ttm r
-    ON r.ticker = e.ticker
-    AND r.fecha_consulta = (SELECT MAX(fecha_consulta) FROM ingest.ratios_ttm)
-LEFT JOIN ingest.keymetrics k
-    ON k.ticker = e.ticker
-    AND k.fecha_consulta = (SELECT MAX(fecha_consulta) FROM ingest.keymetrics)
-WHERE e.snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.enriquecimiento)
-  AND r.dividend_yield > 0.02
-  AND e.altman_zona = 'safe'
-  AND e.piotroski_score >= 5
-  AND r.debt_to_equity_ratio < 1.0
-  AND r.interest_coverage_ratio > 3
-  AND e.quality_score >= 55
-ORDER BY e.ticker, r.dividend_yield DESC
-LIMIT 15;
-
-
--- ── 2. BUY & HOLD ─────────────────────────────────────────────────────────────
-TRUNCATE TABLE estrategias.buy_hold;
-
-INSERT INTO estrategias.buy_hold
-SELECT DISTINCT ON (e.ticker)
-    e.ticker,
-    DATE_TRUNC('month', CURRENT_DATE)::DATE AS snapshot_date,
-    b.companyname,
-    e.sector,
-    e.market_cap_tier,
-    e.quality_score,
-    e.value_score,
-    e.altman_z_score,
-    e.altman_zona,
-    e.piotroski_score,
-    e.roic_signo,
-    e.deuda_signo,
-    e.rsi_14_semanal,
-    e.precio_vs_ma200,
-    e.sector_alineado,
-    r.dividend_yield,
-    r.operating_profit_margin,
-    r.interest_coverage_ratio,
-    k.roic,
-    k.net_debt_to_ebitda,
-    ROW_NUMBER() OVER (ORDER BY e.quality_score DESC) AS ranking
-FROM seleccion.enriquecimiento e
-LEFT JOIN universos.all_usa_common_equity_base b ON b.ticker = e.ticker
-LEFT JOIN ingest.ratios_ttm r
-    ON r.ticker = e.ticker
-    AND r.fecha_consulta = (SELECT MAX(fecha_consulta) FROM ingest.ratios_ttm)
-LEFT JOIN ingest.keymetrics k
-    ON k.ticker = e.ticker
-    AND k.fecha_consulta = (SELECT MAX(fecha_consulta) FROM ingest.keymetrics)
-WHERE e.snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.enriquecimiento)
-  AND e.quality_score >= 75
-  AND e.altman_zona = 'safe'
-  AND e.piotroski_score >= 6
-  AND e.roic_signo = 1
-  AND e.deuda_signo = -1
-  AND r.operating_profit_margin > 0.15
-  AND r.interest_coverage_ratio > 5
-ORDER BY e.ticker, e.quality_score DESC
-LIMIT 15;
-
-
--- ── 3. CASH FLOW ──────────────────────────────────────────────────────────────
+-- ── 1. CASH FLOW (prioridad máxima — sin exclusiones) ─────────────────────────
 TRUNCATE TABLE estrategias.cash_flow;
 
 INSERT INTO estrategias.cash_flow
@@ -152,7 +59,7 @@ ORDER BY e.ticker, d.score_conviccion DESC
 LIMIT 15;
 
 
--- ── 4. THE WHEEL ──────────────────────────────────────────────────────────────
+-- ── 2. THE WHEEL (excluir Cash Flow) ──────────────────────────────────────────
 TRUNCATE TABLE estrategias.the_wheel;
 
 INSERT INTO estrategias.the_wheel
@@ -195,11 +102,129 @@ WHERE e.snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.enriquecimient
   AND o.nivel_iv IN ('media', 'alta')
   AND r.operating_profit_margin > 0.10
   AND r.current_ratio > 1.0
+  AND e.ticker NOT IN (
+      SELECT ticker FROM estrategias.cash_flow
+      WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.cash_flow)
+  )
 ORDER BY e.ticker, e.quality_score DESC
 LIMIT 10;
 
 
--- ── 5. CRECIMIENTO ────────────────────────────────────────────────────────────
+-- ── 3. DIVIDENDOS (excluir Cash Flow y The Wheel) ─────────────────────────────
+TRUNCATE TABLE estrategias.dividendos;
+
+INSERT INTO estrategias.dividendos
+SELECT DISTINCT ON (e.ticker)
+    e.ticker,
+    DATE_TRUNC('month', CURRENT_DATE)::DATE AS snapshot_date,
+    b.companyname,
+    e.sector,
+    e.market_cap_tier,
+    e.quality_score,
+    e.value_score,
+    e.altman_z_score,
+    e.altman_zona,
+    e.piotroski_score,
+    e.roic_signo,
+    e.deuda_signo,
+    e.rsi_14_semanal,
+    e.precio_vs_ma200,
+    e.sector_alineado,
+    r.dividend_yield,
+    r.debt_to_equity_ratio,
+    r.interest_coverage_ratio,
+    r.operating_profit_margin,
+    k.roic,
+    k.net_debt_to_ebitda,
+    e.momentum_3m,
+    e.momentum_6m,
+    ROW_NUMBER() OVER (ORDER BY r.dividend_yield DESC) AS ranking
+FROM seleccion.enriquecimiento e
+LEFT JOIN universos.all_usa_common_equity_base b ON b.ticker = e.ticker
+LEFT JOIN ingest.ratios_ttm r
+    ON r.ticker = e.ticker
+    AND r.fecha_consulta = (SELECT MAX(fecha_consulta) FROM ingest.ratios_ttm)
+LEFT JOIN ingest.keymetrics k
+    ON k.ticker = e.ticker
+    AND k.fecha_consulta = (SELECT MAX(fecha_consulta) FROM ingest.keymetrics)
+WHERE e.snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.enriquecimiento)
+  AND r.dividend_yield > 0.02
+  AND e.altman_zona = 'safe'
+  AND e.piotroski_score >= 5
+  AND r.debt_to_equity_ratio < 1.0
+  AND r.interest_coverage_ratio > 3
+  AND e.quality_score >= 55
+  AND e.ticker NOT IN (
+      SELECT ticker FROM estrategias.cash_flow
+      WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.cash_flow)
+  )
+  AND e.ticker NOT IN (
+      SELECT ticker FROM estrategias.the_wheel
+      WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.the_wheel)
+  )
+ORDER BY e.ticker, r.dividend_yield DESC
+LIMIT 15;
+
+
+-- ── 4. BUY & HOLD (excluir Cash Flow, The Wheel y Dividendos) ─────────────────
+TRUNCATE TABLE estrategias.buy_hold;
+
+INSERT INTO estrategias.buy_hold
+SELECT DISTINCT ON (e.ticker)
+    e.ticker,
+    DATE_TRUNC('month', CURRENT_DATE)::DATE AS snapshot_date,
+    b.companyname,
+    e.sector,
+    e.market_cap_tier,
+    e.quality_score,
+    e.value_score,
+    e.altman_z_score,
+    e.altman_zona,
+    e.piotroski_score,
+    e.roic_signo,
+    e.deuda_signo,
+    e.rsi_14_semanal,
+    e.precio_vs_ma200,
+    e.sector_alineado,
+    r.dividend_yield,
+    r.operating_profit_margin,
+    r.interest_coverage_ratio,
+    k.roic,
+    k.net_debt_to_ebitda,
+    ROW_NUMBER() OVER (ORDER BY e.quality_score DESC) AS ranking
+FROM seleccion.enriquecimiento e
+LEFT JOIN universos.all_usa_common_equity_base b ON b.ticker = e.ticker
+LEFT JOIN ingest.ratios_ttm r
+    ON r.ticker = e.ticker
+    AND r.fecha_consulta = (SELECT MAX(fecha_consulta) FROM ingest.ratios_ttm)
+LEFT JOIN ingest.keymetrics k
+    ON k.ticker = e.ticker
+    AND k.fecha_consulta = (SELECT MAX(fecha_consulta) FROM ingest.keymetrics)
+WHERE e.snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.enriquecimiento)
+  AND e.quality_score >= 75
+  AND e.altman_zona = 'safe'
+  AND e.piotroski_score >= 6
+  AND e.roic_signo = 1
+  AND e.deuda_signo = -1
+  AND r.operating_profit_margin > 0.15
+  AND r.interest_coverage_ratio > 5
+  AND e.ticker NOT IN (
+      SELECT ticker FROM estrategias.cash_flow
+      WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.cash_flow)
+  )
+  AND e.ticker NOT IN (
+      SELECT ticker FROM estrategias.the_wheel
+      WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.the_wheel)
+  )
+  AND e.ticker NOT IN (
+      SELECT ticker FROM estrategias.dividendos
+      WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.dividendos)
+  )
+ORDER BY e.ticker, e.quality_score DESC
+LIMIT 15;
+
+
+-- ── 5. CRECIMIENTO (excluir todas las anteriores) ─────────────────────────────
 TRUNCATE TABLE estrategias.crecimiento;
 
 INSERT INTO estrategias.crecimiento
@@ -241,5 +266,21 @@ WHERE e.snapshot_date = (SELECT MAX(snapshot_date) FROM seleccion.enriquecimient
   AND e.rsi_14_semanal BETWEEN 45 AND 70
   AND e.sector_alineado = 'ALIGNED'
   AND r.operating_profit_margin > 0.10
+  AND e.ticker NOT IN (
+      SELECT ticker FROM estrategias.cash_flow
+      WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.cash_flow)
+  )
+  AND e.ticker NOT IN (
+      SELECT ticker FROM estrategias.the_wheel
+      WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.the_wheel)
+  )
+  AND e.ticker NOT IN (
+      SELECT ticker FROM estrategias.dividendos
+      WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.dividendos)
+  )
+  AND e.ticker NOT IN (
+      SELECT ticker FROM estrategias.buy_hold
+      WHERE snapshot_date = (SELECT MAX(snapshot_date) FROM estrategias.buy_hold)
+  )
 ORDER BY e.ticker, e.momentum_6m DESC
 LIMIT 15;
